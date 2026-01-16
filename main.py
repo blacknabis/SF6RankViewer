@@ -194,8 +194,16 @@ def collect_matches(db: Session = Depends(get_db)):
                 character=player_data.get("character")
             )
             db.add(player)
-            db.commit()
-            db.refresh(player)
+        else:
+            # 기존 플레이어 정보도 최신으로 업데이트
+            player.name = player_data.get("name")
+            player.lp = player_data.get("lp")
+            player.rank = player_data.get("rank")
+            player.character = player_data.get("character")
+            player.last_updated = datetime.now()
+            
+        db.commit()
+        db.refresh(player)
         
         # 대전 기록 수집 (내 이름 전달)
         my_name = player_data.get("name")
@@ -438,10 +446,41 @@ if __name__ == "__main__":
     import uvicorn
     
     # 서버 시작 후 브라우저 자동 실행
+    # 서버 시작 후 브라우저 자동 실행 (Chrome 우선)
     def open_browser():
         import time
+        import os
+        import webbrowser
+        
         time.sleep(1.5)  # 서버가 완전히 시작될 때까지 대기
-        webbrowser.open("http://localhost:8000")
+        
+        target_url = "http://localhost:8000"
+        
+        # Chrome 경로 후보 (Windows)
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe") 
+        ]
+        
+        chrome_path = None
+        for path in chrome_paths:
+            if os.path.exists(path):
+                chrome_path = path
+                break
+                
+        if chrome_path:
+            try:
+                # Chrome 등록 및 실행
+                webbrowser.register('chrome', None, webbrowser.BackgroundBrowser(chrome_path))
+                webbrowser.get('chrome').open(target_url)
+                print(f"Chrome 브라우저로 실행합니다: {chrome_path}")
+                return
+            except Exception as e:
+                print(f"Chrome 실행 실패: {e}")
+        
+        # Chrome 실패 시 기본 브라우저 사용
+        webbrowser.open(target_url)
     
     # 별도 스레드에서 브라우저 실행
     threading.Thread(target=open_browser, daemon=True).start()

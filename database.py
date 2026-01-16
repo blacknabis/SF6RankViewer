@@ -35,15 +35,15 @@ class Match(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     player_id = Column(Integer, ForeignKey("players.id"))
-    opponent_name = Column(String)
-    opponent_character = Column(String)
+    opponent_name = Column(String, index=True)
+    opponent_character = Column(String, index=True)
     opponent_mr = Column(Integer, nullable=True)  # 상대 MR (Master Rating)
     opponent_lp = Column(Integer, nullable=True)  # 상대 LP
-    my_character = Column(String)  # 내가 사용한 캐릭터
+    my_character = Column(String, index=True)  # 내가 사용한 캐릭터
     my_mr = Column(Integer, nullable=True)  # 내 MR
     my_lp = Column(Integer, nullable=True)  # 내 LP
-    result = Column(String)  # WIN, LOSE, DRAW
-    match_date = Column(DateTime)  # 대전 날짜/시간
+    result = Column(String, index=True)  # WIN, LOSE, DRAW
+    match_date = Column(DateTime, index=True)  # 대전 날짜/시간
     
     player = relationship("Player", back_populates="matches")
 

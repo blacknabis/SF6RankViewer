@@ -129,88 +129,51 @@ class Scraper:
                     # 상세 페이지에서 정보 추출
                     print("5. 상세 페이지 정보 파싱...")
                     
-                    # 이름
+                    # JSON 데이터 파싱 (Next.js Hydration Data 사용)
                     try:
-                        # 1순위: 사용자 요청 셀렉터
-                        name_locator = page.locator(".status_name__gXNo9").first
-                        if name_locator.count() == 0:
-                             # 2순위: 기존 셀렉터 (백업)
-                             name_locator = page.locator(".fighter_banner__name__L_4cI").first
-                        if name_locator.count() == 0:
-                             name_locator = page.locator("[class*='fighter_banner_name']").first
-                        
-                        if name_locator.count() > 0:
-                            name = name_locator.text_content().strip()
-                            print(f"   - 이름 발견: {name}")
-                        else:
-                            print("   - 이름을 찾을 수 없음")
-                    except Exception as e:
-                        print(f"   - 이름 파싱 중 에러: {e}")
-
-                    # User Code (페이지 내 표시된 코드 확인)
-                    try:
-                        sid_locator = page.locator(".status_sid__P91rn").first
-                        if sid_locator.count() > 0:
-                            sid_text = sid_locator.text_content().strip()
-                            # "User Code: 123456789" 형식일 수 있으므로 숫자만 추출
-                            import re
-                            sid_match = re.search(r'\d+', sid_text)
-                            if sid_match:
-                                page_user_code = sid_match.group(0)
-                                print(f"   - 페이지 내 User Code 발견: {page_user_code}")
-                                if user_code == "unknown_code":
-                                    user_code = page_user_code
-                    except Exception as e:
-                        print(f"   - User Code 파싱 중 에러: {e}")
-
-                    # 캐릭터
-                    try:
-                        char_locator = page.locator(".fighter_banner__character__30J_3 img").first
-                        if char_locator.count() == 0:
-                            char_locator = page.locator("[class*='fighter_banner_character'] img").first
+                        next_data_el = page.locator("#__NEXT_DATA__")
+                        if next_data_el.count() > 0:
+                            json_text = next_data_el.text_content()
+                            next_data = json.loads(json_text)
                             
-                        if char_locator.count() > 0:
-                            character = char_locator.get_attribute("alt")
-                            print(f"   - 캐릭터 발견: {character}")
-                        else:
-                            character = "Unknown"
-                            print("   - 캐릭터를 찾을 수 없음")
-                    except:
-                        character = "Unknown"
+                            # 데이터 경로: props -> pageProps -> fighter_banner_info
+                            info = next_data.get("props", {}).get("pageProps", {}).get("fighter_banner_info", {})
+                            
+                            if info:
+                                # 이름
+                                name = info.get("personal_info", {}).get("fighter_id", "Unknown")
+                                print(f"   - [JSON] 이름: {name}")
 
-                    # LP / Rank / MR
-                    lp = 0
-                    rank = "Unknown"
-                    mr = None
-                    
-                    try:
-                        # 정의된 리스트(dl, dt, dd) 또는 리스트(ul, li) 구조 확인
-                        # Buckler 사이트 구조에 맞춰 수정
-                        
-                        # LP 찾기
-                        lp_el = page.locator("li").filter(has_text="리그 포인트").last
-                        if lp_el.count() > 0:
-                            lp_text = lp_el.text_content()
-                            import re
-                            lp_match = re.search(r'(\d{1,3}(,\d{3})*|\d+)\s*LP', lp_text)
-                            if lp_match:
-                                lp_str = lp_match.group(1).replace(",", "")
-                                lp = int(lp_str)
-                                print(f"   - LP 파싱 성공: {lp}")
-                        
-                        # MR 찾기
-                        mr_el = page.locator("li").filter(has_text="마스터 레이트").last
-                        if mr_el.count() > 0:
-                            mr_text = mr_el.text_content()
-                            mr_match = re.search(r'(\d{1,3}(,\d{3})*|\d+)\s*MR', mr_text)
-                            if mr_match:
-                                mr_str = mr_match.group(1).replace(",", "")
-                                mr = int(mr_str)
-                                rank = f"Master ({mr} MR)"
-                                print(f"   - MR 파싱 성공: {mr}")
-                        
+                                # 캐릭터 (영어 대문자, 예: RASHID)
+                                character = info.get("favorite_character_alpha", "Unknown")
+                                print(f"   - [JSON] 캐릭터: {character}")
+                                
+                                # 리그 정보
+                                league_info = info.get("favorite_character_league_info", {})
+                                if league_info:
+                                    # LP
+                                    lp = league_info.get("league_point", 0)
+                                    print(f"   - [JSON] LP: {lp}")
+                                    
+                                    # MR & Rank
+                                    mr_val = league_info.get("master_rating", 0)
+                                    rank_name = league_info.get("league_rank_info", {}).get("league_rank_name", "Unknown")
+                                    
+                                    if mr_val and mr_val > 0:
+                                        mr = mr_val
+                                        rank = f"{rank_name} ({mr} MR)"
+                                        print(f"   - [JSON] MR: {mr}")
+                                    else:
+                                        rank = rank_name
+                                        print(f"   - [JSON] Rank: {rank}")
+                            else:
+                                print("   - [JSON] fighter_banner_info가 비어있음")
+                        else:
+                            print("   - [JSON] __NEXT_DATA__ 태그를 찾을 수 없음 (DOM 파싱으로 전환 필요)")
+                            
                     except Exception as e:
-                        print(f"   - 랭크 정보 파싱 중 에러: {e}")
+                        print(f"   - JSON 파싱 중 에러: {e}")
+
 
                     data = {
                         "user_code": user_code,
