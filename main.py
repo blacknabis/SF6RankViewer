@@ -168,9 +168,10 @@ def refresh_stats(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=error_msg)
 
 @app.post("/api/collect_matches")
-def collect_matches(db: Session = Depends(get_db)):
+def collect_matches(db: Session = Depends(get_db), limit: int = 20):
     """
     대전 기록을 수집하여 DB에 저장합니다.
+    limit: 가져올 매치 수 (자동 수집 시 1, 수동 시 20)
     """
     try:
         # 먼저 플레이어 정보 가져오기
@@ -207,7 +208,7 @@ def collect_matches(db: Session = Depends(get_db)):
         
         # 대전 기록 수집 (내 이름 전달)
         my_name = player_data.get("name")
-        matches = scraper.get_match_history(user_code, my_name=my_name, limit=20)
+        matches = scraper.get_match_history(user_code, my_name=my_name, limit=limit)
         
         if not matches:
             return {"status": "success", "message": "No new matches found", "count": 0}

@@ -122,13 +122,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Single match collection (used by both manual and interval)
-    async function collectMatchesOnce() {
+    // limit: 자동 수집 시 1, 수동 시 20 (기본값)
+    async function collectMatchesOnce(limit = 20) {
         btnCollectMatches.disabled = true;
         btnCollectMatches.innerHTML = '<span class="icon">⏳</span> Collecting...';
         if (collectStatusEl) collectStatusEl.textContent = 'Collecting...';
 
         try {
-            const res = await fetch('/api/collect_matches', { method: 'POST' });
+            const res = await fetch(`/api/collect_matches?limit=${limit}`, { method: 'POST' });
             if (!res.ok) {
                 const err = await res.json();
                 throw new Error(err.detail || 'Unknown error');
@@ -170,8 +171,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // Start Collection
             const intervalSec = Number(collectIntervalInput.value) || 30;
 
-            // Immediate collection
-            collectMatchesOnce();
+            // Immediate collection (limit=1 for auto polling)
+            collectMatchesOnce(1);
 
             collectStatusEl.textContent = `Running every ${intervalSec}s`;
             logMessage(`Periodic collection started (every ${intervalSec}s).`);
@@ -180,7 +181,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btnStartCollect.classList.remove('primary');
             btnStartCollect.classList.add('danger');
 
-            collectIntervalId = setInterval(collectMatchesOnce, intervalSec * 1000);
+            collectIntervalId = setInterval(() => collectMatchesOnce(1), intervalSec * 1000);
         }
     });
 
