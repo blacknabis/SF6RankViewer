@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SF6 Viewer Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+</head>
+
+<body class="dashboard-body">
+    <div class="dashboard-container">
+        <header>
+            <h1>SF6 Viewer Control Panel</h1>
+            <div id="connection-status" class="status-badge disconnected">Disconnected</div>
+        </header>
+        <main>
+            <section class="card status-card">
+                <h2>System Status</h2>
+                <div class="status-grid">
+                    <div class="status-item"><span class="label">Auth File</span><span id="auth-status"
+                            class="value pending">Checking...</span></div>
+                    <div class="status-item"><span class="label">Database</span><span id="db-status"
+                            class="value pending">Checking...</span></div>
+                    <div class="status-item"><span class="label">Last Update</span><span id="last-update"
+                            class="value">-</span></div>
+                </div>
+                <div id="player-data" style="margin-top: 15px;"></div>
+            </section>
+            <section class="card actions-card">
+                <h2>Actions</h2>
+                <div class="button-group">
+                    <button id="btn-login" class="btn primary">Open Login Browser</button>
+                    <button id="btn-refresh" class="btn secondary">Refresh Data</button>
+                    <button id="btn-collect-matches" class="btn accent">Collect Matches</button>
+                </div>
+
+                <div class="button-group" style="margin-top: 10px; align-items: center;">
+                    <label for="collect-interval">Interval (s):</label>
+                    <input type="number" id="collect-interval" value="30" style="width: 60px; padding: 5px;">
+                    <button id="btn-start-collect" class="btn primary">Start Collect</button>
+                    <span id="collect-status" class="status-text"
+                        style="margin-left: 10px; font-weight: bold; color: #4CAF50;"></span>
+                </div>
+
+                <div class="button-group">
+                    <button id="btn-open-stats" class="btn primary">Open Statistics</button>
+                    <button id="btn-copy-stats-url" class="btn secondary">Copy Stats URL</button>
+                </div>
+
+                <div class="button-group">
+                    <label for="character-filter">Character Filter:</label>
+                    <input type="text" id="character-filter" placeholder="Enter character name">
+                    <button id="btn-apply-filter" class="btn secondary">Apply</button>
+                </div>
+
+                <div class="button-group">
+                    <button id="btn-delete-db" class="btn danger">Delete Database</button>
+                </div>
+                <p class="hint">Click "Open Login Browser" to launch the browser on the host machine for authentication.
+                </p>
+            </section>
+
+            <section class="card log-card">
+                <h2>Collection Log</h2>
+                <div id="collection-log" class="log-container"></div>
+            </section>
+
+            <section class="card match-history-card">
+                <h2>Recent Matches</h2>
+                <div id="match-history"></div>
+            </section>
+        </main>
+    </div>
+    <script src="/static/dashboard.js?v=2.3"></script>
+</body>
+
+</html>

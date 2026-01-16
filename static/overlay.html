@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SF6 Overlay</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="player-info">
+            <div class="rank-badge" id="rank">Diamond 1</div>
+            <div class="details">
+                <div class="name" id="name">PlayerName</div>
+                <div class="lp">LP: <span id="lp">15000</span></div>
+                <div class="character" id="character">Ryu</div>
+            </div>
+        </div>
+        <!-- 매치 기록 등 추가 가능 -->
+    </div>
+
+    <script>
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                document.getElementById('name').textContent = data.name;
+                document.getElementById('lp').textContent = data.lp;
+                document.getElementById('rank').textContent = data.rank;
+                document.getElementById('character').textContent = data.character;
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+            }
+        }
+
+        // 5초마다 데이터 갱신
+        setInterval(fetchStats, 5000);
+        fetchStats(); // 초기 로드
+    </script>
+</body>
+</html>

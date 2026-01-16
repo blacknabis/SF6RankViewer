@@ -1,0 +1,212 @@
+/* Compact Streaming Layout - Premium Glassmorphism Design */
+.stats-body-compact {
+    background: transparent;
+    color: #ffffff;
+    font-family: 'Inter', sans-serif;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    width: 1400px;
+    height: 180px;
+    /* Gradient from bottom to top to make text readable without boxes */
+    background: transparent;
+}
+
+.stats-container-compact {
+    width: 1400px;
+    height: 180px;
+    padding: 10px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+}
+
+.stats-row {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    height: 100%;
+    gap: 15px;
+    align-items: center;
+}
+
+/* Card Common Styles - Clean HUD */
+.stat-card-compact,
+.mr-chart-compact {
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border: none;
+    border-radius: 0;
+    padding: 10px;
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    /* Align bottom */
+    box-shadow: none;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Hover Effect */
+/* .stat-card-compact:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 40px 0 rgba(0, 0, 0, 0.5);
+    border-color: rgba(255, 255, 255, 0.3);
+} */
+
+/* Win Rate Cards */
+.stat-card-compact {
+    width: 220px;
+    min-width: 220px;
+    position: relative;
+    overflow: hidden;
+}
+
+/* Remove separator line */
+.stat-card-compact::after {
+    display: none;
+}
+
+.stat-card-compact h3 {
+    margin: 0 0 2px 0;
+    /* Reduced margin */
+    font-size: 1.3rem;
+    /* Much Larger Title */
+    color: #ffffff;
+    /* Pure White */
+    font-weight: 800;
+    /* Extra Bold */
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 1.0;
+    /* Full Opacity */
+    text-shadow: 2px 2px 2px rgba(0, 0, 0, 0.9);
+    /* Strong Shadow */
+}
+
+/* Remove dot */
+.stat-card-compact h3::before {
+    display: none;
+}
+
+.stat-value-big {
+    font-size: 3.2rem;
+    /* Slightly Larger */
+    font-weight: 900;
+    color: #ffffff;
+    margin-bottom: 0px;
+    text-align: left;
+    line-height: 1.1;
+    text-shadow: 3px 3px 0px rgba(0, 0, 0, 1.0);
+    /* Strong Hard Shadow */
+    letter-spacing: -2px;
+    font-family: 'Inter', sans-serif;
+}
+
+.stat-value-sub {
+    font-size: 1.4rem;
+    /* Much Larger Sub-text */
+    color: #ffffff;
+    /* Pure White */
+    margin-bottom: 8px;
+    text-align: left;
+    font-weight: 700;
+    /* Bold */
+    opacity: 1.0;
+    /* Full Opacity */
+    text-shadow: 2px 2px 2px rgba(0, 0, 0, 0.9);
+    /* Strong Shadow */
+}
+
+/* Progress Bar - Simple Thin Line */
+.progress-container {
+    width: 100%;
+    height: 8px;
+    /* Thicker bar */
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 5px;
+}
+
+.progress-bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 1s cubic-bezier(0.22, 1, 0.36, 1);
+    position: relative;
+    /* Remove shadow/glow */
+    box-shadow: none;
+}
+
+.progress-bar::after {
+    display: none;
+}
+
+/* Clean Colors - Titles are now white, bars keep color */
+.stat-card-compact:nth-child(1) h3 {
+    color: #ffffff;
+}
+
+.stat-card-compact:nth-child(1) .progress-bar {
+    background: #ff4757;
+    box-shadow: 0 0 10px #ff4757;
+}
+
+.stat-card-compact:nth-child(2) h3 {
+    color: #ffffff;
+}
+
+.stat-card-compact:nth-child(2) .progress-bar {
+    background: #2ed573;
+    box-shadow: 0 0 10px #2ed573;
+}
+
+.stat-card-compact:nth-child(3) h3 {
+    color: #ffffff;
+}
+
+.stat-card-compact:nth-child(3) .progress-bar {
+    background: #1e90ff;
+    box-shadow: 0 0 10px #1e90ff;
+}
+
+.stat-card-compact:nth-child(4) h3 {
+    color: #ffffff;
+}
+
+.stat-card-compact:nth-child(4) .progress-bar {
+    background: #ffa502;
+    box-shadow: 0 0 10px #ffa502;
+}
+
+/* MR Chart Area */
+.mr-chart-compact {
+    flex-grow: 1;
+    width: auto;
+    max-width: none;
+    border: none;
+    padding: 0 20px;
+}
+
+.mr-chart-compact h3 {
+    display: none;
+    /* Hide MR Title for cleaner look, chart is self-explanatory */
+}
+
+.chart-container-mr {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    flex: 1;
+}
+
+/* Chart Canvas Contrast */
+canvas {
+    filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.5));
+}

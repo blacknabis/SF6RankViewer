@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SF6 Match Statistics</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/stats_compact.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body class="stats-body-compact">
+    <div class="stats-container-compact">
+        <section class="stats-row">
+            <!-- Total Win Rate -->
+            <div class="stat-card-compact">
+                <h3>Total</h3>
+                <div class="stat-value-big" id="totalWinRate">0%</div>
+                <div class="stat-value-sub" id="totalRecord">0W 0L</div>
+                <div class="progress-container">
+                    <div class="progress-bar" id="totalProgressBar" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- Recent 100 -->
+            <div class="stat-card-compact">
+                <h3 id="recent100Title">Recent</h3>
+                <div class="stat-value-big" id="recent100WinRate">0%</div>
+                <div class="stat-value-sub" id="recent100Record">0W 0L</div>
+                <div class="progress-container">
+                    <div class="progress-bar" id="recent100ProgressBar" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- VS Character -->
+            <div class="stat-card-compact">
+                <h3 id="lastOpponentTitle">vs Char</h3>
+                <div class="stat-value-big" id="lastOpponentWinRate">-</div>
+                <div class="stat-value-sub" id="lastOpponentRecord">-</div>
+                <div class="progress-container">
+                    <div class="progress-bar" id="lastOpponentProgressBar" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- VS Player -->
+            <div class="stat-card-compact">
+                <h3 id="selectedOpponentTitle">vs Player</h3>
+                <div class="stat-value-big" id="selectedOpponentWinRate">-</div>
+                <div class="stat-value-sub" id="selectedOpponentRecord">-</div>
+                <div class="progress-container">
+                    <div class="progress-bar" id="selectedOpponentProgressBar" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- MR History Chart -->
+            <div class="mr-chart-compact">
+                <h3>MR Flow</h3>
+                <div class="chart-container-mr">
+                    <canvas id="mrHistoryChart"></canvas>
+                </div>
+            </div>
+        </section>
+    </div>
+    <script src="/static/stats.js?v=3.0"></script>
+</body>
+
+</html>
