@@ -308,20 +308,36 @@ def stats_page():
 @app.get("/api/stats/summary")
 def get_stats_summary(db: Session = Depends(get_db), limit: int = 100):
     """
-    전체 승률 및 최근 N개 승률 통계
+    전체 승률 및 최근 N개 승률 통계 (최적화된 버전)
+    - 기존: 7+ 개별 쿼리 -> 최적화: 3개 쿼리로 통합
     """
+    from sqlalchemy import func, case
+    
     try:
-        # 전체 승/패 카운트
-        total_matches = db.query(Match).count()
-        total_wins = db.query(Match).filter(Match.result == "WIN").count()
-        total_losses = db.query(Match).filter(Match.result == "LOSE").count()
+        # 1. 단일 쿼리로 전체 통계 집계 (count 3번 -> 1번)
+        total_stats = db.query(
+            func.count(Match.id).label('total'),
+            func.sum(case((Match.result == "WIN", 1), else_=0)).label('wins'),
+            func.sum(case((Match.result == "LOSE", 1), else_=0)).label('losses')
+        ).first()
         
-        # 최근 N개 승/패 카운트 (limit 파라미터 사용)
-        recent_matches = db.query(Match).order_by(Match.match_date.desc()).limit(limit).all()
-        recent_wins = sum(1 for m in recent_matches if m.result == "WIN")
-        recent_losses = sum(1 for m in recent_matches if m.result == "LOSE")
+        total_matches = total_stats.total or 0
+        total_wins = total_stats.wins or 0
+        total_losses = total_stats.losses or 0
         
-        # 마지막 대전 상대
+        # 2. 최근 N개 통계 (서브쿼리로 최적화)
+        recent_subquery = db.query(Match.id, Match.result).order_by(Match.match_date.desc()).limit(limit).subquery()
+        recent_stats = db.query(
+            func.count(recent_subquery.c.id).label('total'),
+            func.sum(case((recent_subquery.c.result == "WIN", 1), else_=0)).label('wins'),
+            func.sum(case((recent_subquery.c.result == "LOSE", 1), else_=0)).label('losses')
+        ).first()
+        
+        recent_total = recent_stats.total or 0
+        recent_wins = recent_stats.wins or 0
+        recent_losses = recent_stats.losses or 0
+        
+        # 3. 마지막 대전 상대 정보
         last_match = db.query(Match).order_by(Match.match_date.desc()).first()
         last_opponent_name_stats = None
         last_opponent_char_stats = None
@@ -330,28 +346,34 @@ def get_stats_summary(db: Session = Depends(get_db), limit: int = 100):
         if last_match:
             opponent_name = last_match.opponent_name
             opponent_char = last_match.opponent_character
-            my_character = last_match.my_character  # 내가 마지막으로 사용한 캐릭터
+            my_character = last_match.my_character
             
-            # 마지막 상대 유저와의 전체 전적
-            opponent_name_matches = db.query(Match).filter(Match.opponent_name == opponent_name).all()
-            opponent_name_wins = sum(1 for m in opponent_name_matches if m.result == "WIN")
-            opponent_name_losses = sum(1 for m in opponent_name_matches if m.result == "LOSE")
+            # 상대 유저와의 전적 (단일 집계 쿼리)
+            name_stats = db.query(
+                func.count(Match.id).label('total'),
+                func.sum(case((Match.result == "WIN", 1), else_=0)).label('wins'),
+                func.sum(case((Match.result == "LOSE", 1), else_=0)).label('losses')
+            ).filter(Match.opponent_name == opponent_name).first()
+            
             last_opponent_name_stats = {
                 "name": opponent_name,
-                "wins": opponent_name_wins,
-                "losses": opponent_name_losses,
-                "total": len(opponent_name_matches)
+                "wins": name_stats.wins or 0,
+                "losses": name_stats.losses or 0,
+                "total": name_stats.total or 0
             }
             
-            # 마지막 상대 캐릭터와의 전체 전적
-            opponent_char_matches = db.query(Match).filter(Match.opponent_character == opponent_char).all()
-            opponent_char_wins = sum(1 for m in opponent_char_matches if m.result == "WIN")
-            opponent_char_losses = sum(1 for m in opponent_char_matches if m.result == "LOSE")
+            # 상대 캐릭터와의 전적 (단일 집계 쿼리)
+            char_stats = db.query(
+                func.count(Match.id).label('total'),
+                func.sum(case((Match.result == "WIN", 1), else_=0)).label('wins'),
+                func.sum(case((Match.result == "LOSE", 1), else_=0)).label('losses')
+            ).filter(Match.opponent_character == opponent_char).first()
+            
             last_opponent_char_stats = {
                 "character": opponent_char,
-                "wins": opponent_char_wins,
-                "losses": opponent_char_losses,
-                "total": len(opponent_char_matches)
+                "wins": char_stats.wins or 0,
+                "losses": char_stats.losses or 0,
+                "total": char_stats.total or 0
             }
         
         return {
@@ -363,9 +385,9 @@ def get_stats_summary(db: Session = Depends(get_db), limit: int = 100):
             "recent_100": {
                 "wins": recent_wins,
                 "losses": recent_losses,
-                "total": len(recent_matches)
+                "total": recent_total
             },
-            "my_character": my_character,  # 내가 사용한 캐릭터 추가
+            "my_character": my_character,
             "last_opponent_name": last_opponent_name_stats,
             "last_opponent_char": last_opponent_char_stats
         }
