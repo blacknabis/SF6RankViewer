@@ -29,23 +29,30 @@ class Scraper:
     
     def _get_context(self):
         """인증된 컨텍스트 생성 또는 재사용"""
-        browser = self._ensure_browser()
-        
-        if Scraper._context is None:
-            if not os.path.exists(AUTH_FILE):
-                print("❌ [Scraper] 인증 파일이 없습니다.")
-                return None
+        try:
+            browser = self._ensure_browser()
             
-            Scraper._context = browser.new_context(
-                storage_state=AUTH_FILE,
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport={'width': 1920, 'height': 1080},
-                locale='ko-KR',
-                timezone_id='Asia/Seoul'
-            )
-            print("✅ [Scraper] 인증 컨텍스트 생성 완료")
-        
-        return Scraper._context
+            # 컨텍스트가 없거나 사용 불가능하면 새로 생성
+            if Scraper._context is None:
+                if not os.path.exists(AUTH_FILE):
+                    print("❌ [Scraper] 인증 파일이 없습니다.")
+                    return None
+                
+                Scraper._context = browser.new_context(
+                    storage_state=AUTH_FILE,
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='ko-KR',
+                    timezone_id='Asia/Seoul'
+                )
+                print("✅ [Scraper] 인증 컨텍스트 생성 완료")
+            
+            return Scraper._context
+        except Exception as e:
+            print(f"⚠️ [Scraper] 컨텍스트 생성 실패, 브라우저 재시작 시도: {e}")
+            # 브라우저 완전 재시작
+            self._full_reset()
+            return self._get_context_fresh()
     
     def _reset_context(self):
         """컨텍스트를 재생성 (인증 갱신 후)"""
@@ -55,6 +62,50 @@ class Scraper:
             except:
                 pass
             Scraper._context = None
+    
+    def _full_reset(self):
+        """브라우저 전체 재시작 (에러 복구용)"""
+        try:
+            if Scraper._context:
+                Scraper._context.close()
+        except:
+            pass
+        try:
+            if Scraper._browser:
+                Scraper._browser.close()
+        except:
+            pass
+        try:
+            if Scraper._playwright:
+                Scraper._playwright.stop()
+        except:
+            pass
+        Scraper._context = None
+        Scraper._browser = None
+        Scraper._playwright = None
+        print("🔄 [Scraper] 브라우저 완전 리셋 완료")
+    
+    def _get_context_fresh(self):
+        """새로운 컨텍스트 생성 (폴백용)"""
+        if not os.path.exists(AUTH_FILE):
+            print("❌ [Scraper] 인증 파일이 없습니다.")
+            return None
+        
+        try:
+            Scraper._playwright = sync_playwright().start()
+            Scraper._browser = Scraper._playwright.chromium.launch(headless=True)
+            Scraper._context = Scraper._browser.new_context(
+                storage_state=AUTH_FILE,
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1920, 'height': 1080},
+                locale='ko-KR',
+                timezone_id='Asia/Seoul'
+            )
+            print("✅ [Scraper] 브라우저 새로 시작 완료")
+            return Scraper._context
+        except Exception as e:
+            print(f"❌ [Scraper] 브라우저 시작 실패: {e}")
+            return None
     
     def close(self):
         """브라우저 리소스 정리 (서버 종료 시 호출)"""
