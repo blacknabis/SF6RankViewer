@@ -18,16 +18,27 @@ class Scraper:
         로그인 완료 후 세션 상태를 저장합니다.
         """
         print("로그인을 위해 브라우저를 엽니다. 로그인 후 창을 닫지 마시고 엔터를 눌러주세요.")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context()
-            page = context.new_page()
-            page.goto(TARGET_URL)
-            
-            # 사용자가 로그인할 때까지 대기 (브라우저가 닫힐 때까지 반복)
-            print("브라우저가 열렸습니다. 로그인 후 브라우저를 닫아주세요.")
-            
-            try:
+        try:
+            with sync_playwright() as p:
+                print("[Scraper] Playwright initialized. Launching chromium...")
+                try:
+                    browser = p.chromium.launch(headless=False)
+                    print("[Scraper] Browser launched successfully.")
+                except Exception as e:
+                    print(f"❌ [Scraper] Browser launch failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return
+
+                context = browser.new_context()
+                page = context.new_page()
+                print(f"[Scraper] Navigating to {TARGET_URL}")
+                page.goto(TARGET_URL)
+                
+                # 사용자가 로그인할 때까지 대기 (브라우저가 닫힐 때까지 반복)
+                print("브라우저가 열렸습니다. 로그인 후 브라우저를 닫아주세요.")
+                
+                try:
                 while True:
                     if page.is_closed():
                         break
