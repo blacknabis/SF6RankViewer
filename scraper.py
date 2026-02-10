@@ -35,27 +35,29 @@ class Scraper:
                 print(f"[Scraper] Navigating to {TARGET_URL}")
                 page.goto(TARGET_URL)
                 
-                # 사용자가 로그인할 때까지 대기 (브라우저가 닫힐 때까지 반복)
                 print("브라우저가 열렸습니다. 로그인 후 브라우저를 닫아주세요.")
                 
                 try:
-                while True:
-                    if page.is_closed():
-                        break
-                    
-                    # 현재 URL이 타겟 사이트일 때 주기적으로 저장 (로그인 상태 갱신)
-                    try:
-                        if "streetfighter.com" in page.url:
-                            context.storage_state(path=AUTH_FILE)
-                            # print(f"인증 정보 갱신됨: {page.url}") # 너무 자주 출력되면 시끄러우므로 주석 처리
-                    except Exception:
-                        pass 
+                    while True:
+                        if page.is_closed():
+                            break
                         
-                    page.wait_for_timeout(2000) # 2초마다 상태 저장 시도
-            except Exception as e:
-                print(f"브라우저 감지 중 에러: {e}")
-            
-            print(f"인증 정보가 {AUTH_FILE}에 저장되었습니다.")
+                        try:
+                            if "streetfighter.com" in page.url:
+                                context.storage_state(path=AUTH_FILE)
+                        except Exception:
+                            pass 
+                            
+                        page.wait_for_timeout(2000)
+                except Exception as e:
+                    print(f"브라우저 감지 중 에러: {e}")
+                
+                print(f"인증 정보가 {AUTH_FILE}에 저장되었습니다.")
+
+        except Exception as e:
+            print(f"❌ [Scraper] Critical error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def get_stats(self, user_code=None):
         """
