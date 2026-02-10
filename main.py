@@ -9,10 +9,22 @@ import threading
 import webbrowser
 from datetime import datetime
 
+import sys
+
 app = FastAPI()
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 # 정적 파일 마운트 (오버레이 HTML/CSS/JS)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=resource_path("static")), name="static")
 
 # DB 초기화
 init_db()
@@ -22,12 +34,12 @@ scraper = Scraper()
 @app.get("/")
 async def get_dashboard():
     """대시보드 페이지 반환"""
-    return FileResponse("static/dashboard.html")
+    return FileResponse(resource_path("static/dashboard.html"))
 
 @app.get("/overlay")
 async def get_overlay():
     """오버레이 HTML 페이지 반환"""
-    return FileResponse("static/overlay.html")
+    return FileResponse(resource_path("static/overlay.html"))
 
 @app.get("/api/status")
 async def get_status(db: Session = Depends(get_db)):
