@@ -520,4 +520,10 @@ if __name__ == "__main__":
     # 별도 스레드에서 브라우저 실행
     threading.Thread(target=open_browser, daemon=True).start()
     
+    # PyInstaller --noconsole 모드에서 sys.stdout/stderr가 None이 되는 문제 해결
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
