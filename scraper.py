@@ -22,7 +22,14 @@ class Scraper:
             with sync_playwright() as p:
                 print("[Scraper] Playwright initialized. Launching chromium...")
                 try:
-                    browser = p.chromium.launch(headless=False)
+                    # 시스템 브라우저(Chrome/Edge) 사용 시도
+                    try:
+                        print("[Scraper] Trying to launch system Chrome...")
+                        browser = p.chromium.launch(headless=False, channel="chrome")
+                    except Exception:
+                        print("[Scraper] Chrome not found. Trying Edge...")
+                        browser = p.chromium.launch(headless=False, channel="msedge")
+                    
                     print("[Scraper] Browser launched successfully.")
                 except Exception as e:
                     print(f"❌ [Scraper] Browser launch failed: {e}")
@@ -71,7 +78,18 @@ class Scraper:
         data = {}
         with sync_playwright() as p:
             print("1. 브라우저 실행 중 (Headless: True)...")
-            browser = p.chromium.launch(headless=True)
+            try:
+                browser = p.chromium.launch(headless=True, channel="chrome")
+            except Exception:
+                try:
+                    browser = p.chromium.launch(headless=True, channel="msedge")
+                except Exception:
+                    # Fallback to bundled if available (unlikely in this case but good practice)
+                    try:
+                         browser = p.chromium.launch(headless=True)
+                    except Exception as e:
+                        print(f"❌ [Scraper] Failed to launch browser in get_stats: {e}")
+                        return None
             context = browser.new_context(
                 storage_state=AUTH_FILE,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -231,8 +249,19 @@ class Scraper:
 
         matches = []
         with sync_playwright() as p:
-            print("1. 브라우저 실행 중 (Headless: False)...")
-            browser = p.chromium.launch(headless=True)
+            print("1. 브라우저 실행 중 (Headless: True)...")
+            try:
+                browser = p.chromium.launch(headless=True, channel="chrome")
+            except Exception:
+                try:
+                    browser = p.chromium.launch(headless=True, channel="msedge")
+                except Exception:
+                     # Fallback
+                    try:
+                        browser = p.chromium.launch(headless=True)
+                    except Exception as e:
+                        print(f"❌ [Scraper] Failed to launch browser in get_match_history: {e}")
+                        return []
             context = browser.new_context(
                 storage_state=AUTH_FILE,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',

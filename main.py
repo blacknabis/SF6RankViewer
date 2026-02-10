@@ -316,7 +316,7 @@ def get_matches(db: Session = Depends(get_db), limit: int = 50):
 @app.get("/stats")
 def stats_page():
     """통계 페이지 제공"""
-    return FileResponse("static/stats.html")
+    return FileResponse(resource_path("static/stats.html"))
 
 @app.get("/api/stats/summary")
 def get_stats_summary(db: Session = Depends(get_db), limit: int = 100):
