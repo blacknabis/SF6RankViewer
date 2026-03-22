@@ -432,8 +432,9 @@ def get_mr_history(db: Session = Depends(get_db), limit: int = 100):
     MR 변화 히스토리 (그래프용)
     """
     try:
-        # MR이 있는 매치만 가져오기 (시간순)
-        matches = db.query(Match).filter(Match.my_mr.isnot(None)).order_by(Match.match_date.asc()).limit(limit).all()
+        # 최근 limit 개수만큼 먼저 가져온 뒤, 그래프 표시를 위해 시간순(오름차순)으로 정렬
+        recent_matches = db.query(Match).filter(Match.my_mr.isnot(None)).order_by(Match.match_date.desc()).limit(limit).all()
+        matches = list(reversed(recent_matches))
         
         history = [{
             "date": m.match_date.isoformat() if m.match_date else None,
