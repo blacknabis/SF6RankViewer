@@ -55,6 +55,19 @@
                     <button id="btn-apply-filter" class="btn secondary">Apply</button>
                 </div>
 
+                <div class="button-group" style="margin-top: 10px; align-items: center;">
+                    <label for="bg-image-url">Stats Background:</label>
+                    <input type="text" id="bg-image-url" placeholder="URL or leave empty" style="width: 150px;">
+                    <input type="file" id="bg-image-file" accept="image/*" style="display: none;">
+                    <button id="btn-browse-bg" class="btn secondary">Browse...</button>
+                    <label for="bg-opacity" style="margin-left: 10px;">Opacity:</label>
+                    <input type="number" id="bg-opacity" value="100" min="0" max="100" style="width: 50px; padding: 5px;">
+                    <span style="margin-right: 10px;">%</span>
+                    <button id="btn-save-bg" class="btn primary">Save</button>
+                    <span id="bg-save-status" style="margin-left: 10px; color: #4CAF50; font-weight: bold;"></span>
+                </div>
+
+
                 <div class="button-group">
                     <button id="btn-delete-db" class="btn danger">Delete Database</button>
                 </div>

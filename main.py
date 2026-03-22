@@ -135,6 +135,53 @@ def set_user_code_config(data: dict):
     save_user_config(config)
     return {"status": "success", "user_code": user_code}
 
+from fastapi import Request
+
+@app.get("/api/config/bg_image")
+def get_bg_image_config():
+    config = load_user_config()
+    return {
+        "bg_image": config.get("bg_image", ""),
+        "bg_opacity": config.get("bg_opacity", 100)
+    }
+
+@app.post("/api/config/bg_image")
+def set_bg_image_config(data: dict):
+    config = load_user_config()
+    if "bg_image" in data:
+        config["bg_image"] = data["bg_image"]
+    if "bg_opacity" in data:
+        config["bg_opacity"] = data["bg_opacity"]
+    save_user_config(config)
+    return {
+        "status": "success",
+        "bg_image": config.get("bg_image", ""),
+        "bg_opacity": config.get("bg_opacity", 100)
+    }
+
+@app.post("/api/upload_bg_raw")
+async def upload_bg_raw(request: Request):
+    """Raw binary upload to avoid any JSON/Pydantic limits and multipart dependencies"""
+    try:
+        body = await request.body()
+        with open("custom_bg.img", "wb") as f:
+            f.write(body)
+        
+        config = load_user_config()
+        config["bg_image"] = "/api/custom_bg"
+        save_user_config(config)
+        
+        return {"status": "success", "bg_image": "/api/custom_bg"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/custom_bg")
+def get_custom_bg():
+    if os.path.exists("custom_bg.img"):
+        return FileResponse("custom_bg.img")
+    raise HTTPException(status_code=404, detail="No custom background found")
+
+
 @app.post("/api/refresh")
 def refresh_stats(db: Session = Depends(get_db)):
     """

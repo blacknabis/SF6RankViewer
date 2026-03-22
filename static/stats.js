@@ -3,15 +3,60 @@
 let charts = {};
 
 document.addEventListener('DOMContentLoaded', async () => {
+    await loadBgImageConfig();
     await loadStatistics();
     await loadMRHistory();
 
     // 30초마다 자동 갱신
     setInterval(async () => {
+        await loadBgImageConfig();
         await loadStatistics();
         await loadMRHistory();
     }, 30000); // 30000ms = 30초
 });
+
+async function loadBgImageConfig() {
+    try {
+        const res = await fetch('/api/config/bg_image');
+        if (res.ok) {
+            const data = await res.json();
+            const bgImage = data.bg_image;
+            const bgOpacity = data.bg_opacity !== undefined ? data.bg_opacity : 100;
+            
+            // Create or get background layer
+            let bgLayer = document.getElementById('bg-layer');
+            if (!bgLayer) {
+                bgLayer = document.createElement('div');
+                bgLayer.id = 'bg-layer';
+                document.body.style.position = 'relative'; // Ensure body bounds
+                bgLayer.style.position = 'absolute'; // Bound to body instead of viewport
+                bgLayer.style.top = '0';
+                bgLayer.style.left = '0';
+                bgLayer.style.width = '100%';
+                bgLayer.style.height = '100%';
+                bgLayer.style.zIndex = '-1';
+                bgLayer.style.pointerEvents = 'none';
+                document.body.appendChild(bgLayer);
+                
+                // Clear any old body background
+                document.body.style.backgroundImage = 'none';
+                document.body.style.backgroundColor = 'transparent';
+            }
+
+            if (bgImage) {
+                bgLayer.style.backgroundImage = `url('${bgImage}')`;
+                bgLayer.style.backgroundSize = 'cover';
+                bgLayer.style.backgroundPosition = 'center';
+                bgLayer.style.backgroundRepeat = 'no-repeat';
+                bgLayer.style.opacity = bgOpacity / 100.0;
+            } else {
+                bgLayer.style.backgroundImage = 'none';
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load background image configuration:', e);
+    }
+}
 
 async function loadStatistics() {
     try {

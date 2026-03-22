@@ -16,6 +16,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnApplyFilter = document.getElementById('btn-apply-filter');
     const characterFilterInput = document.getElementById('character-filter');
     const btnDeleteDb = document.getElementById('btn-delete-db');
+    
+    // Background Image
+    const bgImageUrlInput = document.getElementById('bg-image-url');
+    const btnSaveBg = document.getElementById('btn-save-bg');
+    const btnBrowseBg = document.getElementById('btn-browse-bg');
+    const bgImageFile = document.getElementById('bg-image-file');
+    const bgOpacityInput = document.getElementById('bg-opacity');
+    const bgSaveStatus = document.getElementById('bg-save-status');
     const btnOpenStats = document.getElementById('btn-open-stats');
     const btnCopyStatsUrl = document.getElementById('btn-copy-stats-url');
     const matchHistoryContainer = document.getElementById('match-history');
@@ -298,7 +306,103 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Save Background Image
+    if (btnSaveBg && bgImageUrlInput) {
+        btnSaveBg.addEventListener('click', async () => {
+            try {
+                btnSaveBg.disabled = true;
+                const bgImage = bgImageUrlInput.value.trim();
+                const bgOpacity = parseInt(bgOpacityInput ? bgOpacityInput.value : "100", 10);
+                const res = await fetch('/api/config/bg_image', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bg_image: bgImage, bg_opacity: isNaN(bgOpacity) ? 100 : bgOpacity })
+                });
+                if (!res.ok) throw new Error('Failed to save background image configuration');
+                
+                if (bgSaveStatus) {
+                    bgSaveStatus.textContent = 'Saved!';
+                    setTimeout(() => { bgSaveStatus.textContent = ''; }, 3000);
+                } else {
+                    alert('Background image saved!');
+                }
+            } catch (e) {
+                alert(`Error: ${e.message}`);
+            } finally {
+                btnSaveBg.disabled = false;
+            }
+        });
+    }
+
+    // Browse Background Image
+    if (btnBrowseBg && bgImageFile) {
+        btnBrowseBg.addEventListener('click', () => {
+            bgImageFile.click();
+        });
+
+        bgImageFile.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            // Check size if needed (e.g. max 5MB)
+            if (file.size > 5 * 1024 * 1024) {
+                alert("File is too large! Please choose an image under 5MB.");
+                bgImageFile.value = "";
+                return;
+            }
+
+            if (bgSaveStatus) bgSaveStatus.textContent = 'Uploading...';
+            
+            try {
+                btnBrowseBg.disabled = true;
+                const res = await fetch('/api/upload_bg_raw', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': file.type || 'application/octet-stream'
+                    },
+                    body: file
+                });
+                
+                if (!res.ok) throw new Error('Upload failed');
+                const data = await res.json();
+                
+                bgImageUrlInput.value = data.bg_image; // This will now be /api/custom_bg
+                if (bgSaveStatus) {
+                    bgSaveStatus.textContent = 'Uploaded & Saved!';
+                    setTimeout(() => { bgSaveStatus.textContent = ''; }, 3000);
+                }
+            } catch (err) {
+                alert(`Error uploading file: ${err.message}`);
+                if (bgSaveStatus) bgSaveStatus.textContent = '';
+            } finally {
+                btnBrowseBg.disabled = false;
+                bgImageFile.value = ""; // Reset
+            }
+        });
+    }
+
+    // Load Background Image on Init
+    async function loadBgImageConfig() {
+        if (bgImageUrlInput) {
+            try {
+                const res = await fetch('/api/config/bg_image');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.bg_image) {
+                        bgImageUrlInput.value = data.bg_image;
+                    }
+                    if (data.bg_opacity !== undefined && bgOpacityInput) {
+                        bgOpacityInput.value = data.bg_opacity;
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load bg image config', e);
+            }
+        }
+    }
+
     // Initial load
+    loadBgImageConfig();
     fetchStatus();
     displayMatchHistory();
     setInterval(fetchStatus, 5000);
