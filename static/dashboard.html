@@ -15,71 +15,91 @@
             <h1>SF6 Viewer Control Panel</h1>
             <div id="connection-status" class="status-badge disconnected">Disconnected</div>
         </header>
-        <main>
+
+        <main class="bento-grid">
+            <!-- 1. System Status Card -->
             <section class="card status-card">
                 <h2>System Status</h2>
                 <div class="status-grid">
-                    <div class="status-item"><span class="label">Auth File</span><span id="auth-status"
-                            class="value pending">Checking...</span></div>
-                    <div class="status-item"><span class="label">Database</span><span id="db-status"
-                            class="value pending">Checking...</span></div>
-                    <div class="status-item"><span class="label">Last Update</span><span id="last-update"
-                            class="value">-</span></div>
+                    <div class="status-item">
+                        <span class="label">Auth File</span>
+                        <span id="auth-status" class="value pending">Checking...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Database</span>
+                        <span id="db-status" class="value pending">Checking...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Last Update</span>
+                        <span id="last-update" class="value">-</span>
+                    </div>
                 </div>
-                <div id="player-data" style="margin-top: 15px;"></div>
-            </section>
-            <section class="card actions-card">
-                <h2>Actions</h2>
-                <div class="button-group">
-                    <button id="btn-login" class="btn primary">Open Login Browser</button>
-                    <button id="btn-refresh" class="btn secondary">Refresh Data</button>
-                    <button id="btn-collect-matches" class="btn accent">Collect Matches</button>
-                </div>
-
-                <div class="button-group" style="margin-top: 10px; align-items: center;">
-                    <label for="collect-interval">Interval (s):</label>
-                    <input type="number" id="collect-interval" value="30" style="width: 60px; padding: 5px;">
-                    <button id="btn-start-collect" class="btn primary">Start Collect</button>
-                    <span id="collect-status" class="status-text"
-                        style="margin-left: 10px; font-weight: bold; color: #4CAF50;"></span>
-                </div>
-
-                <div class="button-group">
-                    <button id="btn-open-stats" class="btn primary">Open Statistics</button>
-                    <button id="btn-copy-stats-url" class="btn secondary">Copy Stats URL</button>
-                </div>
-
-                <div class="button-group">
-                    <label for="character-filter">Character Filter:</label>
-                    <input type="text" id="character-filter" placeholder="Enter character name">
-                    <button id="btn-apply-filter" class="btn secondary">Apply</button>
-                </div>
-
-                <div class="button-group" style="margin-top: 10px; align-items: center;">
-                    <label for="bg-image-url">Stats Background:</label>
-                    <input type="text" id="bg-image-url" placeholder="URL or leave empty" style="width: 150px;">
-                    <input type="file" id="bg-image-file" accept="image/*" style="display: none;">
-                    <button id="btn-browse-bg" class="btn secondary">Browse...</button>
-                    <label for="bg-opacity" style="margin-left: 10px;">Opacity:</label>
-                    <input type="number" id="bg-opacity" value="100" min="0" max="100" style="width: 50px; padding: 5px;">
-                    <span style="margin-right: 10px;">%</span>
-                    <button id="btn-save-bg" class="btn primary">Save</button>
-                    <span id="bg-save-status" style="margin-left: 10px; color: #4CAF50; font-weight: bold;"></span>
-                </div>
-
-
-                <div class="button-group">
-                    <button id="btn-delete-db" class="btn danger">Delete Database</button>
-                </div>
-                <p class="hint">Click "Open Login Browser" to launch the browser on the host machine for authentication.
-                </p>
+                <div id="player-data" class="player-data-container" style="margin-top: 20px;"></div>
             </section>
 
+            <!-- 2. Collection Log Card -->
             <section class="card log-card">
                 <h2>Collection Log</h2>
                 <div id="collection-log" class="log-container"></div>
             </section>
 
+            <!-- 3. Actions Card (Contains sub-groupings) -->
+            <section class="card actions-card">
+                <h2 style="grid-column: 1 / -1;">Control & Actions</h2>
+
+                <div class="action-group">
+                    <label>Core Operations</label>
+                    <div class="button-row">
+                        <button id="btn-login" class="btn primary">Open Login Browser</button>
+                        <button id="btn-refresh" class="btn secondary">Refresh Data</button>
+                        <button id="btn-collect-matches" class="btn accent">Collect Matches</button>
+                    </div>
+                </div>
+
+                <div class="action-group">
+                    <label>Automation</label>
+                    <div class="button-row">
+                        <label for="collect-interval">Interval (s):</label>
+                        <input type="number" id="collect-interval" value="30" style="width: 70px;">
+                        <button id="btn-start-collect" class="btn primary">Start Collect</button>
+                        <span id="collect-status" class="status-text" style="color: var(--accent-neon); font-weight: bold;"></span>
+                    </div>
+                </div>
+
+                <div class="action-group">
+                    <label>Stats Overlay</label>
+                    <div class="button-row">
+                        <button id="btn-open-stats" class="btn primary">Open Statistics</button>
+                        <button id="btn-copy-stats-url" class="btn secondary">Copy Stats URL</button>
+                    </div>
+                    
+                    <div class="button-row" style="margin-top: 8px;">
+                        <input type="text" id="character-filter" placeholder="Character name" style="flex: 1;">
+                        <button id="btn-apply-filter" class="btn secondary">Apply Filter</button>
+                    </div>
+
+                    <div class="button-row" style="margin-top: 8px;">
+                        <input type="text" id="bg-image-url" placeholder="BG Image URL" style="flex: 1;">
+                        <input type="file" id="bg-image-file" accept="image/*" style="display: none;">
+                        <button id="btn-browse-bg" class="btn secondary">📁</button>
+                        <input type="number" id="bg-opacity" value="100" min="0" max="100" style="width: 60px;">
+                        <span style="font-size: 0.85rem; color: var(--text-secondary);">%</span>
+                        <button id="btn-save-bg" class="btn primary">Save</button>
+                        <span id="bg-save-status" style="color: var(--accent-neon); font-size: 0.85rem;"></span>
+                    </div>
+                </div>
+
+                <div class="action-group" style="border-color: rgba(255, 71, 87, 0.2);">
+                    <label style="color: #ff4757;">Danger Zone</label>
+                    <div class="button-row">
+                        <button id="btn-delete-db" class="btn danger">Delete Database</button>
+                    </div>
+                </div>
+
+                <p class="hint">Click "Open Login Browser" to launch Chrome on the host machine for Capcom ID authentication.</p>
+            </section>
+
+            <!-- 4. Match History Card -->
             <section class="card match-history-card">
                 <h2>Recent Matches</h2>
                 <div id="match-history"></div>
