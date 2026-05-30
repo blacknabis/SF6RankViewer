@@ -1,10 +1,56 @@
 import json
 import os
+import sys
 import time
 from playwright.sync_api import sync_playwright
 
 AUTH_FILE = "auth.json"
 TARGET_URL = "https://www.streetfighter.com/6/buckler"
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def auth_state_has_session(path=AUTH_FILE):
+    if not os.path.exists(path):
+        return False
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    return bool(state.get("cookies") or state.get("origins"))
+
+
+def next_page_props(page):
+    next_data_el = page.locator("#__NEXT_DATA__")
+    if next_data_el.count() == 0:
+        return {}
+
+    try:
+        next_data = json.loads(next_data_el.text_content())
+    except json.JSONDecodeError:
+        return {}
+
+    return next_data.get("props", {}).get("pageProps", {})
+
+
+def page_is_auth_blocked(page):
+    props = next_page_props(page)
+    if props.get("common", {}).get("statusCode") == 403:
+        return True
+
+    login_links = page.locator("a[href*='/auth/loginep']").count()
+    profile_data = props.get("fighter_banner_info")
+    return login_links > 0 and not profile_data
+
+
+def class_contains(name):
+    return f"[class*='{name}']"
 
 class Scraper:
     def __init__(self):
@@ -71,9 +117,9 @@ class Scraper:
         저장된 세션을 사용하여 백그라운드에서 전적 및 프로필 정보를 가져옵니다.
         """
         print("=== [Scraper] get_stats 시작 ===")
-        if not os.path.exists(AUTH_FILE):
+        if not auth_state_has_session():
             print("❌ [Scraper] 인증 파일이 없습니다. 먼저 로그인을 진행해주세요.")
-            return None
+            raise Exception("AUTH_ERROR: Missing or empty auth state. Please login again.")
 
         data = {}
         with sync_playwright() as p:
@@ -107,12 +153,18 @@ class Scraper:
                 print("❌ [Scraper] 시스템 에러 페이지 감지됨. 인증 만료 또는 시스템 오류.")
                 browser.close()
                 raise Exception("AUTH_ERROR: System error page detected")
+            if page_is_auth_blocked(page):
+                browser.close()
+                raise Exception("AUTH_ERROR: Buckler login required. Please login again.")
             
             print("3. 페이지 로드 완료. 사용자 정보 파싱 시작...")
 
             try:
                 # 이름 및 User Code 가져오기
                 name = "Unknown"
+                lp = 0
+                rank = "Unknown"
+                character = "Unknown"
                 extracted_user_code = "unknown_code"
 
                 # 전략 1: 프로필 링크(a 태그)에서 텍스트와 href 추출
@@ -156,19 +208,20 @@ class Scraper:
                     print(f"4. 상세 프로필 페이지로 이동: {profile_url}")
                     page.goto(profile_url, wait_until='networkidle')
                     page.wait_for_load_state("networkidle")
+                    if page_is_auth_blocked(page):
+                        browser.close()
+                        raise Exception("AUTH_ERROR: Buckler login required. Please login again.")
                     
                     # 상세 페이지에서 정보 추출
                     print("5. 상세 페이지 정보 파싱...")
                     
                     # JSON 데이터 파싱 (Next.js Hydration Data 사용)
                     try:
-                        next_data_el = page.locator("#__NEXT_DATA__")
-                        if next_data_el.count() > 0:
-                            json_text = next_data_el.text_content()
-                            next_data = json.loads(json_text)
+                        props = next_page_props(page)
+                        if props:
                             
                             # 데이터 경로: props -> pageProps -> fighter_banner_info
-                            info = next_data.get("props", {}).get("pageProps", {}).get("fighter_banner_info", {})
+                            info = props.get("fighter_banner_info", {})
                             
                             if info:
                                 # 이름
@@ -205,6 +258,8 @@ class Scraper:
                     except Exception as e:
                         print(f"   - JSON 파싱 중 에러: {e}")
 
+                    if name == "Unknown":
+                        raise Exception("PROFILE_PARSE_ERROR: fighter_banner_info not found")
 
                     data = {
                         "user_code": user_code,
@@ -227,6 +282,8 @@ class Scraper:
 
             except Exception as e:
                 print(f"❌ [Scraper] get_stats 실행 중 치명적 에러: {e}")
+                if "AUTH_ERROR" in str(e):
+                    raise
                 import traceback
                 traceback.print_exc()
                 return None
@@ -243,9 +300,9 @@ class Scraper:
         my_name: 내 이름 (Player 1/2 구분을 위해 필요)
         """
         print(f"=== [Scraper] get_match_history 시작 (User Code: {user_code}, My Name: {my_name}) ===")
-        if not os.path.exists(AUTH_FILE):
+        if not auth_state_has_session():
             print("❌ [Scraper] 인증 파일이 없습니다. 먼저 로그인을 진행해주세요.")
-            return []
+            raise Exception("AUTH_ERROR: Missing or empty auth state. Please login again.")
 
         matches = []
         with sync_playwright() as p:
@@ -284,7 +341,10 @@ class Scraper:
             
             print("3. 대전 기록 파싱 시작...")
             try:
-                match_items = page.locator(".battle_data_battlelog__list__JNDjG > li").all()
+                if page_is_auth_blocked(page):
+                    browser.close()
+                    raise Exception("AUTH_ERROR: Buckler login required. Please login again.")
+                match_items = page.locator(f"{class_contains('battle_data_battlelog__list')} > li").all()
                 print(f"   - 발견된 리스트 아이템 수: {len(match_items)}")
                 
                 if not match_items:
@@ -293,37 +353,37 @@ class Scraper:
                 
                 for i, item in enumerate(match_items[:limit]):
                     try:
-                        date_el = item.locator(".battle_data_date__f1sP6")
+                        date_el = item.locator(class_contains("battle_data_date"))
                         date_str = date_el.text_content().strip() if date_el.count() > 0 else ""
                         
                         # Player 1과 Player 2의 이름을 모두 가져오기
-                        p1_name_el = item.locator(".battle_data_name_p1__Ookss .battle_data_name__IPyjF")
+                        p1_name_el = item.locator(f"{class_contains('battle_data_name_p1')} {class_contains('battle_data_name')}")
                         p1_name = p1_name_el.text_content().strip() if p1_name_el.count() > 0 else "Unknown"
                         
-                        p2_name_el = item.locator(".battle_data_name_p2__ua7Oo .battle_data_name__IPyjF")
+                        p2_name_el = item.locator(f"{class_contains('battle_data_name_p2')} {class_contains('battle_data_name')}")
                         p2_name = p2_name_el.text_content().strip() if p2_name_el.count() > 0 else "Unknown"
                         
                         # Player 1과 Player 2의 승패 상태 확인
-                        p1_div = item.locator(".battle_data_player1__MIpvf")
+                        p1_div = item.locator(class_contains("battle_data_player1"))
                         p1_class = p1_div.get_attribute("class") if p1_div.count() > 0 else ""
                         
-                        p2_div = item.locator(".battle_data_player_2__STQb6")
+                        p2_div = item.locator(class_contains("battle_data_player2"))
                         p2_class = p2_div.get_attribute("class") if p2_div.count() > 0 else ""
                         
                         # 승패 판정
-                        p1_won = "battle_data_win__8Y4Me" in p1_class
-                        p2_won = "battle_data_win__8Y4Me" in p2_class
-                        p1_lost = "battle_data_lose__ltUN0" in p1_class
-                        p2_lost = "battle_data_lose__ltUN0" in p2_class
+                        p1_won = "battle_data_win" in p1_class
+                        p2_won = "battle_data_win" in p2_class
+                        p1_lost = "battle_data_lose" in p1_class
+                        p2_lost = "battle_data_lose" in p2_class
                         
                         # 내 이름과 비교하여 누가 나인지 판단
                         if my_name and p1_name == my_name:
                             # Player 1이 나
                             opponent_name = p2_name
-                            my_char_el = item.locator(".battle_data_player1__MIpvf .battle_data_character__Mnj8l img")
-                            opponent_char_el = item.locator(".battle_data_player2__tymNR .battle_data_character__Mnj8l img")
-                            my_lp_el = item.locator(".battle_data_player1__MIpvf .battle_data_lp__6v5G9")
-                            opponent_lp_el = item.locator(".battle_data_player2__tymNR .battle_data_lp__6v5G9")
+                            my_char_el = item.locator(f"{class_contains('battle_data_player1')} {class_contains('battle_data_character')} img")
+                            opponent_char_el = item.locator(f"{class_contains('battle_data_player2')} {class_contains('battle_data_character')} img")
+                            my_lp_el = item.locator(f"{class_contains('battle_data_player1')} {class_contains('battle_data_lp')}")
+                            opponent_lp_el = item.locator(f"{class_contains('battle_data_player2')} {class_contains('battle_data_lp')}")
                             
                             # Player 1의 승패 결과가 내 결과
                             if p1_won:
@@ -336,10 +396,10 @@ class Scraper:
                         elif my_name and p2_name == my_name:
                             # Player 2가 나
                             opponent_name = p1_name
-                            my_char_el = item.locator(".battle_data_player2__tymNR .battle_data_character__Mnj8l img")
-                            opponent_char_el = item.locator(".battle_data_player1__MIpvf .battle_data_character__Mnj8l img")
-                            my_lp_el = item.locator(".battle_data_player2__tymNR .battle_data_lp__6v5G9")
-                            opponent_lp_el = item.locator(".battle_data_player1__MIpvf .battle_data_lp__6v5G9")
+                            my_char_el = item.locator(f"{class_contains('battle_data_player2')} {class_contains('battle_data_character')} img")
+                            opponent_char_el = item.locator(f"{class_contains('battle_data_player1')} {class_contains('battle_data_character')} img")
+                            my_lp_el = item.locator(f"{class_contains('battle_data_player2')} {class_contains('battle_data_lp')}")
+                            opponent_lp_el = item.locator(f"{class_contains('battle_data_player1')} {class_contains('battle_data_lp')}")
                             
                             # Player 2의 승패 결과가 내 결과
                             if p2_won:
@@ -353,10 +413,10 @@ class Scraper:
                             # 이름을 알 수 없는 경우 기본값 (Player 2가 나)
                             print(f"   - 경고: 이름 매칭 실패 (P1: {p1_name}, P2: {p2_name}, My: {my_name})")
                             opponent_name = p1_name
-                            my_char_el = item.locator(".battle_data_player2__tymNR .battle_data_character__Mnj8l img")
-                            opponent_char_el = item.locator(".battle_data_player1__MIpvf .battle_data_character__Mnj8l img")
-                            my_lp_el = item.locator(".battle_data_player2__tymNR .battle_data_lp__6v5G9")
-                            opponent_lp_el = item.locator(".battle_data_player1__MIpvf .battle_data_lp__6v5G9")
+                            my_char_el = item.locator(f"{class_contains('battle_data_player2')} {class_contains('battle_data_character')} img")
+                            opponent_char_el = item.locator(f"{class_contains('battle_data_player1')} {class_contains('battle_data_character')} img")
+                            my_lp_el = item.locator(f"{class_contains('battle_data_player2')} {class_contains('battle_data_lp')}")
+                            opponent_lp_el = item.locator(f"{class_contains('battle_data_player1')} {class_contains('battle_data_lp')}")
                             
                             # Player 2의 승패 결과가 내 결과 (기본값)
                             if p2_won:
@@ -410,6 +470,8 @@ class Scraper:
                 
             except Exception as e:
                 print(f"❌ [Scraper] Battle Log 파싱 중 에러 발생: {e}")
+                if "AUTH_ERROR" in str(e):
+                    raise
                 page.screenshot(path="debug_scraper_error.png")
             
             browser.close()
