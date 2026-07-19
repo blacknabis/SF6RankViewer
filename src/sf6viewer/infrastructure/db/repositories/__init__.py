@@ -5,6 +5,7 @@ from sf6viewer.infrastructure.db.repositories.jobs import SqlAlchemyJobRepositor
 from sf6viewer.infrastructure.db.repositories.matches import SqlAlchemyMatchRepository
 from sf6viewer.infrastructure.db.repositories.quarantines import SqlAlchemyQuarantineRepository
 from sf6viewer.infrastructure.db.repositories.raw_records import SqlAlchemyRawRecordRepository
+from sf6viewer.infrastructure.db.repositories.profiles import SqlAlchemyProfileSnapshotRepository
 
 __all__ = [
     "SqlAlchemyIngestionRepository",
@@ -12,4 +13,5 @@ __all__ = [
     "SqlAlchemyMatchRepository",
     "SqlAlchemyQuarantineRepository",
     "SqlAlchemyRawRecordRepository",
+    "SqlAlchemyProfileSnapshotRepository",
 ]

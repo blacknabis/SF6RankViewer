@@ -12,9 +12,10 @@ import re
 import socket
 from collections.abc import Callable
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, RLock, Lock, Thread
 from time import monotonic, time
 
+import ulid
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -22,17 +23,22 @@ from playwright.sync_api import Page
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
+from sf6viewer.application.services.profile_collection import RawFirstProfileCollectionService
 from sf6viewer.application.services.login_service import LoginService
 from sf6viewer.domain.errors import DomainError, error_from_code
+from sf6viewer.domain.job import JobState
 from sf6viewer.domain.value_objects import UserCode
 from sf6viewer.infrastructure.auth.dpapi_vault import DpapiAuthVault
 from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
+from sf6viewer.infrastructure.buckler.profile_capture import BucklerProfileCapture, normalize_profile
 from sf6viewer.infrastructure.db.engine import (
     create_engine_for,
     create_session_factory,
     run_migrations,
 )
 from sf6viewer.infrastructure.db.models.accounts import AccountModel
+from sf6viewer.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
 
@@ -54,7 +60,14 @@ class NativeLoginBridge:
     def __init__(self, paths: AppPaths, session_factory: Callable[[], Session]) -> None:
         self._paths = paths
         self._session_factory = session_factory
-        self._lock = Lock()
+        self._lock = RLock()
+        self._uow_factory = SqlAlchemyUnitOfWorkFactory(
+            session_factory,
+            self._lock,
+            _DiscardingEventPublisher(),
+            _DiscardingWarningSink(),
+            _new_id,
+        )
 
     def login(self, expected_user_code: object) -> dict[str, bool | str]:
         """Authenticate an exact account without exposing browser session material."""
@@ -126,6 +139,91 @@ class NativeLoginBridge:
             raise
         finally:
             session.close()
+
+    def collect_profile(self) -> dict[str, bool | str]:
+        """Capture, preserve, and project the authenticated profile once."""
+        try:
+            with self._lock:
+                session = self._load_active_session()
+                captured = BucklerProfileCapture(_now_ms).capture(session)
+                job_id = _new_id()
+                ingestion_id = _new_id()
+                with self._uow_factory.write() as uow:
+                    uow.jobs.add(
+                        JobRecord(
+                            id=job_id, type="COLLECT", reason="MANUAL", state="RUNNING",
+                            phase="PROFILE", requested_at_ms=captured.fetched_at_ms,
+                            started_at_ms=captured.fetched_at_ms, finished_at_ms=None,
+                            progress_current=0, progress_total=1, error_code=None,
+                            diagnostic_id=None, summary_json=None,
+                        )
+                    )
+                    uow.ingestions.add(
+                        IngestionRecord(
+                            id=ingestion_id, job_id=job_id, account_id=1, kind="LIVE",
+                            parser_version="buckler-profile-v1", state="NORMALIZING",
+                            started_at_ms=captured.fetched_at_ms, finished_at_ms=None,
+                            raw_count=0, normalized_count=0, duplicate_count=0,
+                            quarantine_count=0, error_code=None, diagnostic_id=None,
+                        )
+                    )
+                    normalized = RawFirstProfileCollectionService(_new_id, _now_ms).persist(
+                        uow,
+                        ingestion_id=ingestion_id,
+                        account_id=1,
+                        captured=captured,
+                        normalizer=normalize_profile,
+                    )
+                    uow.jobs.set_state(
+                        job_id,
+                        JobState.SUCCEEDED if normalized else JobState.SUCCEEDED_WITH_WARNINGS,
+                    )
+                    uow.commit()
+            return {"ok": True, "status": "NORMALIZED" if normalized else "QUARANTINED"}
+        except DomainError as error:
+            return {"ok": False, "code": error.code}
+        except Exception:
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    def _load_active_session(self):
+        """Load DPAPI state only when it belongs to the database's one account."""
+        session = self._session_factory()
+        try:
+            account = session.get(AccountModel, 1)
+            if account is None or account.auth_state != "VALID":
+                raise error_from_code("SESSION.MISSING")
+            auth = DpapiAuthVault(self._paths).load()
+            if auth is None:
+                raise error_from_code("SESSION.MISSING")
+            if auth.user_code.value != account.user_code:
+                raise error_from_code("SESSION.ACCOUNT_MISMATCH")
+            return auth
+        finally:
+            session.close()
+
+
+class _DiscardingEventPublisher:
+    """The desktop bridge has no live event stream; API polling observes commits."""
+
+    def publish(self, events: object) -> None:
+        """Discard post-commit events without changing durable collection data."""
+
+
+class _DiscardingWarningSink:
+    """Avoid exposing post-commit internals through the native bridge."""
+
+    def warn(self, code: str, *, diagnostic_id: str) -> None:
+        """Ignore non-fatal event delivery warnings in the initial desktop host."""
+
+
+def _now_ms() -> int:
+    """Return the current Unix timestamp in milliseconds."""
+    return int(time() * 1_000)
+
+
+def _new_id() -> str:
+    """Create an opaque ULID for local durable records."""
+    return str(ulid.new())
 
 
 def _wait_for_authenticated_profile(page: Page) -> None:

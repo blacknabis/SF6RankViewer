@@ -23,6 +23,7 @@ class SqlAlchemyIngestionRepository:
         """Add an ingestion run to the current transaction."""
         self._ensure_writable()
         self._session.add(IngestionRunModel(**_ingestion_values(ingestion)))
+        self._session.flush()
 
     def get(self, ingestion_id: str) -> IngestionRecord | None:
         """Return an ingestion record when present."""

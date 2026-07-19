@@ -9,6 +9,9 @@ from sf6viewer.application.ports.repositories import (
     IngestionRepository,
     JobRepository,
     MatchRepository,
+    ProfileSnapshotRepository,
+    QuarantineRepository,
+    RawRecordRepository,
 )
 from sf6viewer.domain.events import DomainEvent
 
@@ -19,6 +22,9 @@ class UnitOfWork(Protocol):
     jobs: JobRepository
     ingestions: IngestionRepository
     matches: MatchRepository
+    raw_records: RawRecordRepository
+    quarantines: QuarantineRepository
+    profile_snapshots: ProfileSnapshotRepository
 
     def queue_event(self, event: DomainEvent) -> None:
         """Queue an event for delivery after a successful commit."""

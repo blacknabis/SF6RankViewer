@@ -30,6 +30,7 @@ class SqlAlchemyJobRepository:
         """Add a job to the current transaction."""
         self._ensure_writable()
         self._session.add(JobModel(**_job_values(job)))
+        self._session.flush()
 
     def get(self, job_id: str) -> JobRecord | None:
         """Return a job record when present."""

@@ -5,6 +5,8 @@ const USER_CODE_PATTERN = /^\d{10}$/;
 const LOGIN_MESSAGES = Object.freeze({
   "VALIDATION.USER_CODE": "10자리 사용자 코드를 확인하세요.",
   "SESSION.ACCOUNT_MISMATCH": "입력한 사용자 코드와 로그인한 계정이 다릅니다.",
+  "SESSION.MISSING": "로그인 후 다시 시도하세요.",
+  "SESSION.EXPIRED": "로그인 세션이 만료되었습니다. 다시 로그인하세요.",
   "UPSTREAM.TIMEOUT": "로그인 확인 시간이 초과되었습니다. 다시 시도하세요.",
   "UPSTREAM.UNAVAILABLE": "로그인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
   "INTERNAL.UNEXPECTED": "로그인을 완료할 수 없습니다. 잠시 후 다시 시도하세요."
@@ -50,8 +52,10 @@ function updateLoginAvailability() {
   if (loginInFlight) return;
   const submit = byId("login-submit");
   const wasDisabled = submit.disabled;
-  const available = nativeLoginApi() !== null;
+  const bridge = nativeLoginApi();
+  const available = bridge !== null;
   submit.disabled = !available;
+  byId("profile-collect").disabled = !available || typeof bridge.collect_profile !== "function";
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
   } else if (wasDisabled) {
@@ -61,6 +65,41 @@ function updateLoginAvailability() {
 
 function safeLoginMessage(code) {
   return LOGIN_MESSAGES[code] || LOGIN_MESSAGES["INTERNAL.UNEXPECTED"];
+}
+
+function setProfileCollectionStatus(message) {
+  byId("profile-collect-status").textContent = message;
+}
+
+async function collectProfile() {
+  if (loginInFlight) return;
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.collect_profile !== "function") {
+    setProfileCollectionStatus("데스크톱 수집 연결을 준비 중입니다.");
+    return;
+  }
+  const button = byId("profile-collect");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  setProfileCollectionStatus("인증된 프로필을 수집하고 있습니다.");
+  try {
+    const result = await bridge.collect_profile();
+    if (result && result.ok === true) {
+      setProfileCollectionStatus(
+        result.status === "NORMALIZED"
+          ? "프로필을 안전하게 저장했습니다."
+          : "원문은 저장했지만 현재 형식은 검토가 필요합니다."
+      );
+      await refresh();
+    } else {
+      setProfileCollectionStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+    }
+  } catch (_) {
+    setProfileCollectionStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
+  } finally {
+    button.removeAttribute("aria-busy");
+    updateLoginAvailability();
+  }
 }
 
 function configureObsUrl() {
@@ -120,7 +159,7 @@ async function beginLogin(event) {
     loginInFlight = false;
     input.disabled = false;
     form.removeAttribute("aria-busy");
-    submit.disabled = nativeLoginApi() === null;
+    updateLoginAvailability();
   }
 }
 
@@ -222,6 +261,7 @@ async function refresh() {
 
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
+byId("profile-collect").addEventListener("click", () => { void collectProfile(); });
 configureObsUrl();
 window.addEventListener("pywebviewready", updateLoginAvailability);
 window.setTimeout(updateLoginAvailability, 0);

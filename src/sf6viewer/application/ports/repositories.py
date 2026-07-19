@@ -113,6 +113,22 @@ class QuarantineRecord:
     resolution_match_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProfileSnapshotRecord:
+    """One immutable normalized profile observation linked to raw evidence."""
+
+    id: str
+    account_id: int
+    ingestion_id: str
+    raw_record_id: str
+    display_name: str | None
+    character: str | None
+    rank_name: str | None
+    mr: int | None
+    lp: int | None
+    observed_at_ms: int
+
+
 class InsertOutcome(str, Enum):
     """Result of inserting a match under its durable identity."""
 
@@ -209,4 +225,12 @@ class QuarantineRepository(Protocol):
 
     def add(self, quarantine: QuarantineRecord) -> None:
         """Add a quarantine record to the caller's transaction."""
+        raise NotImplementedError
+
+
+class ProfileSnapshotRepository(Protocol):
+    """Repository operations for immutable normalized profile observations."""
+
+    def add(self, snapshot: ProfileSnapshotRecord) -> None:
+        """Add a normalized profile snapshot to the caller's transaction."""
         raise NotImplementedError

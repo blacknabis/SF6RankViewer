@@ -19,6 +19,7 @@ from sf6viewer.application.ports.repositories import (
     IngestionRepository,
     JobRepository,
     MatchRepository,
+    ProfileSnapshotRepository,
     QuarantineRepository,
     RawRecordRepository,
 )
@@ -29,6 +30,7 @@ from sf6viewer.infrastructure.db.repositories.jobs import SqlAlchemyJobRepositor
 from sf6viewer.infrastructure.db.repositories.matches import SqlAlchemyMatchRepository
 from sf6viewer.infrastructure.db.repositories.quarantines import SqlAlchemyQuarantineRepository
 from sf6viewer.infrastructure.db.repositories.raw_records import SqlAlchemyRawRecordRepository
+from sf6viewer.infrastructure.db.repositories.profiles import SqlAlchemyProfileSnapshotRepository
 
 _READ_ONLY_MESSAGE = "read unit of work is read-only"
 
@@ -116,6 +118,7 @@ class SqlAlchemyUnitOfWork:
         self.matches: MatchRepository
         self.raw_records: RawRecordRepository
         self.quarantines: QuarantineRepository
+        self.profile_snapshots: ProfileSnapshotRepository
 
     def __enter__(self) -> SqlAlchemyUnitOfWork:
         """Configure the connection and construct transaction-scoped repositories."""
@@ -143,6 +146,9 @@ class SqlAlchemyUnitOfWork:
                 self._session, read_only=self._read_only
             )
             self.quarantines = SqlAlchemyQuarantineRepository(
+                self._session, read_only=self._read_only
+            )
+            self.profile_snapshots = SqlAlchemyProfileSnapshotRepository(
                 self._session, read_only=self._read_only
             )
             return self

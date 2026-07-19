@@ -41,7 +41,10 @@ def _configure_sqlite_connection(dbapi_connection: Any, _: Any) -> None:
 def _create_sqlite_engine(database_path: Path) -> Engine:
     """Create a configured SQLite engine for one already-validated database path."""
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(_sqlite_url(database_path))
+    # The loopback API and pywebview bridge use separate threads.  SQLite access
+    # remains serialized by the application's write UoW lock; disabling the
+    # driver thread affinity lets the pool safely serve those owned sessions.
+    engine = create_engine(_sqlite_url(database_path), connect_args={"check_same_thread": False})
     event.listen(engine, "connect", _configure_sqlite_connection)
     return engine
 
