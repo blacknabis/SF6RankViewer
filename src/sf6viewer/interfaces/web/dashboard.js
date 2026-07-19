@@ -56,6 +56,7 @@ function updateLoginAvailability() {
   const available = bridge !== null;
   submit.disabled = !available;
   byId("profile-collect").disabled = !available || typeof bridge.collect_profile !== "function";
+  byId("matches-collect").disabled = !available || typeof bridge.collect_matches !== "function";
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
   } else if (wasDisabled) {
@@ -96,6 +97,38 @@ async function collectProfile() {
     }
   } catch (_) {
     setProfileCollectionStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
+  } finally {
+    button.removeAttribute("aria-busy");
+    updateLoginAvailability();
+  }
+}
+
+function setMatchCollectionStatus(message) {
+  byId("matches-collect-status").textContent = message;
+}
+
+async function collectMatches() {
+  if (loginInFlight) return;
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.collect_matches !== "function") {
+    setMatchCollectionStatus("데스크톱 수집 연결을 준비 중입니다.");
+    return;
+  }
+  const button = byId("matches-collect");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  setMatchCollectionStatus("최근 대전 원문을 수집하고 검증하고 있습니다.");
+  try {
+    const result = await bridge.collect_matches();
+    if (result && result.ok === true) {
+      const summary = `정규화 ${number(result.normalized)}건 · 중복 ${number(result.duplicates)}건 · 격리 ${number(result.quarantined)}건`;
+      setMatchCollectionStatus(summary);
+      await refresh();
+    } else {
+      setMatchCollectionStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+    }
+  } catch (_) {
+    setMatchCollectionStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
   } finally {
     button.removeAttribute("aria-busy");
     updateLoginAvailability();
@@ -262,6 +295,7 @@ async function refresh() {
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
 byId("profile-collect").addEventListener("click", () => { void collectProfile(); });
+byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
 configureObsUrl();
 window.addEventListener("pywebviewready", updateLoginAvailability);
 window.setTimeout(updateLoginAvailability, 0);

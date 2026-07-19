@@ -20,17 +20,25 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import Page
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
-from sf6viewer.application.services.profile_collection import RawFirstProfileCollectionService
 from sf6viewer.application.services.login_service import LoginService
+from sf6viewer.application.services.profile_collection import RawFirstProfileCollectionService
+from sf6viewer.application.services.raw_collection import (
+    CollectionIngestion,
+    RawFirstCollectionService,
+)
 from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.domain.job import JobState
 from sf6viewer.domain.value_objects import UserCode
-from sf6viewer.infrastructure.auth.dpapi_vault import DpapiAuthVault
+from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession, DpapiAuthVault
 from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
+from sf6viewer.infrastructure.buckler.battlelog_capture import (
+    BucklerBattlelogCapture,
+    normalize_battlelog_match,
+)
 from sf6viewer.infrastructure.buckler.profile_capture import BucklerProfileCapture, normalize_profile
 from sf6viewer.infrastructure.db.engine import (
     create_engine_for,
@@ -38,6 +46,7 @@ from sf6viewer.infrastructure.db.engine import (
     run_migrations,
 )
 from sf6viewer.infrastructure.db.models.accounts import AccountModel
+from sf6viewer.infrastructure.db.models.profile_snapshots import ProfileSnapshotModel
 from sf6viewer.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
@@ -185,7 +194,63 @@ class NativeLoginBridge:
         except Exception:
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
 
-    def _load_active_session(self):
+    def collect_matches(self) -> dict[str, bool | str | int]:
+        """Capture ranked matches, preserving raw entries before strict parsing."""
+        try:
+            with self._lock:
+                session, own_display_name = self._load_collection_context()
+                captured = BucklerBattlelogCapture(_now_ms).capture(session)
+                job_id = _new_id()
+                ingestion_id = _new_id()
+                with self._uow_factory.write() as uow:
+                    uow.jobs.add(
+                        JobRecord(
+                            id=job_id, type="COLLECT", reason="MANUAL", state="RUNNING",
+                            phase="MATCHES", requested_at_ms=_now_ms(), started_at_ms=_now_ms(),
+                            finished_at_ms=None, progress_current=0, progress_total=len(captured),
+                            error_code=None, diagnostic_id=None, summary_json=None,
+                        )
+                    )
+                    uow.ingestions.add(
+                        IngestionRecord(
+                            id=ingestion_id, job_id=job_id, account_id=1, kind="LIVE",
+                            parser_version="buckler-battlelog-v1", state="NORMALIZING",
+                            started_at_ms=_now_ms(), finished_at_ms=None, raw_count=0,
+                            normalized_count=0, duplicate_count=0, quarantine_count=0,
+                            error_code=None, diagnostic_id=None,
+                        )
+                    )
+                    result = RawFirstCollectionService(_new_id, _now_ms).persist(
+                        uow,
+                        uow.raw_records,
+                        uow.quarantines,
+                        ingestion=CollectionIngestion(ingestion_id=ingestion_id, account_id=1),
+                        collected_matches=captured,
+                        normalizer=lambda payload: normalize_battlelog_match(
+                            payload,
+                            account_user_code=session.user_code.value,
+                            own_display_name=own_display_name,
+                        ),
+                    )
+                    uow.jobs.set_state(
+                        job_id,
+                        JobState.SUCCEEDED_WITH_WARNINGS
+                        if result.quarantine_count
+                        else JobState.SUCCEEDED,
+                    )
+                    uow.commit()
+            return {
+                "ok": True,
+                "normalized": result.normalized_count,
+                "duplicates": result.duplicate_count,
+                "quarantined": result.quarantine_count,
+            }
+        except DomainError as error:
+            return {"ok": False, "code": error.code}
+        except Exception:
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    def _load_active_session(self) -> AuthSession:
         """Load DPAPI state only when it belongs to the database's one account."""
         session = self._session_factory()
         try:
@@ -198,6 +263,23 @@ class NativeLoginBridge:
             if auth.user_code.value != account.user_code:
                 raise error_from_code("SESSION.ACCOUNT_MISMATCH")
             return auth
+        finally:
+            session.close()
+
+    def _load_collection_context(self) -> tuple[AuthSession, str]:
+        """Load authenticated state and the verified display name used to orient matches."""
+        auth = self._load_active_session()
+        session = self._session_factory()
+        try:
+            profile = session.scalar(
+                select(ProfileSnapshotModel)
+                .where(ProfileSnapshotModel.account_id == 1)
+                .order_by(ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc())
+                .limit(1)
+            )
+            if profile is None or not isinstance(profile.display_name, str) or not profile.display_name.strip():
+                raise error_from_code("DATA.IDENTITY_GROUP_INCOMPLETE")
+            return auth, profile.display_name
         finally:
             session.close()
 
