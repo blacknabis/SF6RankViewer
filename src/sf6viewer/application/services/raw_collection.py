@@ -186,6 +186,19 @@ class RawFirstCollectionService:
                 )
                 quarantine_count += 1
                 continue
+            except Exception:
+                # A parser implementation may fail in an unanticipated way.
+                # The PENDING evidence is already durable in this transaction,
+                # so preserve it and expose only the stable contract code.
+                self._quarantine(
+                    quarantines,
+                    raw_records,
+                    raw_record,
+                    ingestion.account_id,
+                    "UPSTREAM.CONTRACT_CHANGED",
+                )
+                quarantine_count += 1
+                continue
 
             outcome = uow.matches.insert_or_compare(match)
             if outcome is InsertOutcome.IDENTITY_COLLISION:
