@@ -17,7 +17,7 @@ V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그�
 
 ## 빠른 실행
 
-Windows에서 `SF6Viewer.exe` 하나만 실행하면 됩니다.
+Windows에서 [최신 정식 릴리스의 `SF6Viewer.exe`](https://github.com/blacknabis/SF6RankViewer/releases/latest/download/SF6Viewer.exe) 하나만 내려받아 실행하면 됩니다.
 
 1. `SF6Viewer.exe`를 실행합니다.
 2. 처음 사용할 때만 **로그인**을 눌러 열린 Buckler 브라우저에서 로그인을 완료합니다.

@@ -160,8 +160,6 @@ class JsonlLogSink:
     def write(self, event: Mapping[str, object]) -> Path:
         """Append one redacted JSON object and return its file path."""
         encoded_line = self._encode(event)
-        if len(encoded_line) > self.max_bytes:
-            raise ValueError("Log event exceeds maximum size.")
         now = self._utc_now()
 
         with self._lock:

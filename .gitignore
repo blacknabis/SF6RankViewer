@@ -1,28 +1,55 @@
+# Python and environments
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+.env
+.venv/
 env/
 venv/
-.env
-.venv
+
+# Build output
 build/
 dist/
 *.spec
 !packaging/*.spec
+*.zip
+
+# Local runtime data
 *.db
 auth.json
 user_config.json
+custom_bg.img
 debug_*.html
 debug_*.png
-.vscode/
-.superpowers/
-/docs/superpowers/
-.worktrees/
-.venv/
-frontend/dist/
+
+# Editors and development tools
+.agents/
 .coverage
 .mypy_cache/
 .pytest_cache/
-src/sf6viewer/web/
+.superpowers/
+.vscode/
+.worktrees/
+/docs/superpowers/
+/implementation_plan.md
+/task.md
+/walkthrough.md
+
+# Retained V1 workspace files; V2 lives under src/sf6viewer.
+/README_MAC.md
+/alembic.ini
+/antigravity_dev_story.md
+/build.bat
+/database.py
+/get_user_code.py
+/login.py
+/main.py
+/release_blog_post.md
+/requirements.txt
+/run_server.bat
+/scraper.py
+/static/
+/stop_server.bat
+/test_scraper.py
