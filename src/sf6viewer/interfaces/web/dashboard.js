@@ -3,8 +3,7 @@
 const POLL_INTERVAL_MS = 12_000;
 const USER_CODE_PATTERN = /^\d{10}$/;
 const LOGIN_MESSAGES = Object.freeze({
-  "VALIDATION.USER_CODE": "10자리 사용자 코드를 확인하세요.",
-  "SESSION.ACCOUNT_MISMATCH": "입력한 사용자 코드와 로그인한 계정이 다릅니다.",
+  "SESSION.ACCOUNT_MISMATCH": "기존 계정과 로그인한 계정이 다릅니다.",
   "SESSION.MISSING": "로그인 후 다시 시도하세요.",
   "SESSION.EXPIRED": "로그인 세션이 만료되었습니다. 다시 로그인하세요.",
   "UPSTREAM.TIMEOUT": "로그인 확인 시간이 초과되었습니다. 다시 시도하세요.",
@@ -70,7 +69,6 @@ function updateLoginAvailability() {
   const available = bridge !== null;
   const collectionAvailable = available && !loginInFlight && !authProbeInFlight && savedSessionVerified;
   submit.disabled = !available || loginInFlight;
-  byId("profile-collect").disabled = !collectionAvailable || typeof bridge.collect_profile !== "function";
   byId("matches-collect").disabled = !collectionAvailable || typeof bridge.collect_matches !== "function";
   byId("matches-reset").disabled = !available || resetInFlight || typeof bridge.clear_matches !== "function";
   if (!available) {
@@ -79,24 +77,19 @@ function updateLoginAvailability() {
 }
 
 function applyAuthenticatedSession(userCode) {
-  const input = byId("expected-user-code");
-  input.value = userCode;
-  input.readOnly = true;
+  byId("login-account").textContent = `연결된 사용자 코드: ${userCode}`;
   savedSessionVerified = true;
   byId("login-submit").textContent = "다시 로그인";
 }
 
 function applyStoredUserCode(userCode) {
-  const input = byId("expected-user-code");
-  input.value = userCode;
-  input.readOnly = true;
+  byId("login-account").textContent = `저장된 사용자 코드: ${userCode}`;
   savedSessionVerified = false;
   byId("login-submit").textContent = "다시 로그인";
 }
 
 function applyManualLoginState() {
-  const input = byId("expected-user-code");
-  input.readOnly = false;
+  byId("login-account").textContent = "로그인 후 Buckler 프로필에서 사용자 코드를 자동으로 확인합니다.";
   savedSessionVerified = false;
   byId("login-submit").textContent = "로그인 시작";
 }
@@ -142,7 +135,7 @@ async function restoreSavedSession() {
       setLoginStatus("저장된 사용자 코드를 불러왔습니다. 다시 로그인하세요.");
     } else {
       applyManualLoginState();
-      setLoginStatus("내 계정의 10자리 사용자 코드를 입력한 뒤 로그인하세요.");
+      setLoginStatus("로그인하면 Buckler 프로필에서 사용자 코드를 자동으로 확인합니다.");
     }
   } catch (_) {
     if (probeEpoch === authStatusEpoch) {
@@ -161,47 +154,6 @@ function safeLoginMessage(code) {
 
 function safeCollectionMessage(code) {
   return COLLECTION_MESSAGES[code] || COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"];
-}
-
-function setProfileCollectionStatus(message) {
-  byId("profile-collect-status").textContent = message;
-}
-
-async function collectProfile() {
-  if (loginInFlight) return;
-  const bridge = nativeLoginApi();
-  if (!bridge || typeof bridge.collect_profile !== "function") {
-    setProfileCollectionStatus("데스크톱 수집 연결을 준비 중입니다.");
-    return;
-  }
-  const button = byId("profile-collect");
-  button.disabled = true;
-  button.setAttribute("aria-busy", "true");
-  setProfileCollectionStatus("인증된 프로필을 수집하고 있습니다.");
-  try {
-    const result = await bridge.collect_profile();
-    if (result && result.ok === true) {
-      if (result.status === "QUEUED") {
-        setProfileCollectionStatus("현재 수집이 끝나면 프로필 수집을 이어서 실행합니다.");
-      } else if (result.status === "COALESCED") {
-        setProfileCollectionStatus("동일한 프로필 수집 요청이 이미 진행 중입니다.");
-      } else {
-        setProfileCollectionStatus(
-          result.status === "NORMALIZED"
-            ? "프로필을 안전하게 저장했습니다."
-            : "원문은 저장했지만 현재 형식은 검토가 필요합니다."
-        );
-        await refresh();
-      }
-    } else {
-      setProfileCollectionStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
-    }
-  } catch (_) {
-    setProfileCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
-  } finally {
-    button.removeAttribute("aria-busy");
-    updateLoginAvailability();
-  }
 }
 
 function setMatchCollectionStatus(message) {
@@ -299,14 +251,6 @@ async function beginLogin(event) {
   event.preventDefault();
   if (loginInFlight) return;
 
-  const input = byId("expected-user-code");
-  const expectedUserCode = input.value.trim();
-  if (!USER_CODE_PATTERN.test(expectedUserCode)) {
-    setLoginStatus(LOGIN_MESSAGES["VALIDATION.USER_CODE"]);
-    input.focus();
-    return;
-  }
-
   const bridge = nativeLoginApi();
   if (!bridge) {
     updateLoginAvailability();
@@ -320,15 +264,17 @@ async function beginLogin(event) {
   updateLoginAvailability();
   const form = byId("login-form");
   const submit = byId("login-submit");
-  input.disabled = true;
   submit.disabled = true;
   form.setAttribute("aria-busy", "true");
   setLoginStatus("브라우저에서 로그인을 완료하세요. 로그인 확인 중에는 이 화면을 유지합니다.");
 
   try {
-    const result = await bridge.login(expectedUserCode);
-    if (result && result.ok === true && result.user_code === expectedUserCode) {
-      applyAuthenticatedSession(expectedUserCode);
+    const result = await bridge.login();
+    const userCode = result && typeof result.user_code === "string" && USER_CODE_PATTERN.test(result.user_code)
+      ? result.user_code
+      : null;
+    if (result && result.ok === true && userCode !== null) {
+      applyAuthenticatedSession(userCode);
       setLoginStatus("로그인이 완료되었습니다. 인증 정보는 이 Windows 사용자 계정에 안전하게 저장되었습니다.");
     } else {
       setLoginStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
@@ -337,7 +283,6 @@ async function beginLogin(event) {
     setLoginStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
   } finally {
     loginInFlight = false;
-    input.disabled = false;
     form.removeAttribute("aria-busy");
     updateLoginAvailability();
   }
@@ -441,7 +386,6 @@ async function refresh() {
 
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
-byId("profile-collect").addEventListener("click", () => { void collectProfile(); });
 byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
 byId("matches-reset").addEventListener("click", () => { void clearMatches(); });
 configureObsUrl();

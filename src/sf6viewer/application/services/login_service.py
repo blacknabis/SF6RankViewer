@@ -19,8 +19,8 @@ class LoginService:
         self._auth_browser = auth_browser
         self._vault = vault
 
-    def login(self, expected_user_code: UserCode) -> AuthSession:
-        """Run interactive sign-in and save a session for the expected account only."""
+    def login(self, expected_user_code: UserCode | None = None) -> AuthSession:
+        """Sign in, discovering the first account code from its profile link."""
         expected_user_code = _canonical_expected_user_code(expected_user_code)
         try:
             session = self._auth_browser.login_interactively()
@@ -31,7 +31,7 @@ class LoginService:
 
         if not isinstance(session, AuthSession):
             raise RuntimeError(_INTERACTIVE_LOGIN_FAILED)
-        if session.user_code != expected_user_code:
+        if expected_user_code is not None and session.user_code != expected_user_code:
             self._clear_vault()
             raise error_from_code("SESSION.ACCOUNT_MISMATCH")
 
@@ -40,11 +40,12 @@ class LoginService:
 
     def restore(self, expected_user_code: UserCode) -> AuthSession:
         """Restore the saved session for the expected account without browser access."""
-        expected_user_code = _canonical_expected_user_code(expected_user_code)
+        canonical_user_code = _canonical_expected_user_code(expected_user_code)
+        assert canonical_user_code is not None
         session = self._load_vault()
         if session is None:
             raise error_from_code("SESSION.MISSING")
-        if session.user_code != expected_user_code:
+        if session.user_code != canonical_user_code:
             self._clear_vault()
             raise error_from_code("SESSION.ACCOUNT_MISMATCH")
         return session
@@ -78,8 +79,10 @@ class LoginService:
             raise RuntimeError(_AUTH_STORAGE_UNAVAILABLE) from None
 
 
-def _canonical_expected_user_code(expected_user_code: UserCode) -> UserCode:
+def _canonical_expected_user_code(expected_user_code: UserCode | None) -> UserCode | None:
     """Return the canonical expected user code without accepting raw values."""
+    if expected_user_code is None:
+        return None
     if not isinstance(expected_user_code, UserCode):
         raise TypeError(_INVALID_EXPECTED_USER_CODE)
     return UserCode.parse(expected_user_code.value)

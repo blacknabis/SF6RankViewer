@@ -11,9 +11,10 @@ from __future__ import annotations
 import re
 import socket
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Event, RLock, Lock, Thread
+from threading import Event, Lock, RLock, Thread
 from time import monotonic, time
 
 import ulid
@@ -42,10 +43,16 @@ from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.domain.job import JobState
 from sf6viewer.domain.value_objects import UserCode
 from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession, DpapiAuthVault
-from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
-from sf6viewer.infrastructure.buckler.battlelog_capture import BucklerBattlelogCapture, normalize_battlelog_match
+from sf6viewer.infrastructure.buckler.battlelog_capture import (
+    BucklerBattlelogCapture,
+    normalize_battlelog_match,
+)
 from sf6viewer.infrastructure.buckler.browser_capture import PersistentBucklerBrowser
-from sf6viewer.infrastructure.buckler.profile_capture import BucklerProfileCapture, normalize_profile
+from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
+from sf6viewer.infrastructure.buckler.profile_capture import (
+    BucklerProfileCapture,
+    normalize_profile,
+)
 from sf6viewer.infrastructure.db.engine import (
     create_engine_for,
     create_session_factory,
@@ -96,12 +103,11 @@ class NativeLoginBridge:
         self._capture_browser = PersistentBucklerBrowser()
         self._collection_dispatcher: Callable[[str], dict[str, bool | str | int]] | None = None
 
-    def login(self, expected_user_code: object) -> dict[str, bool | str]:
-        """Authenticate an exact account without exposing browser session material."""
+    def login(self) -> dict[str, bool | str]:
+        """Discover and authenticate the account without exposing browser state."""
         try:
-            expected = UserCode.parse(expected_user_code)
             with self._lock:
-                self._assert_account_scope(expected)
+                expected = self._projected_account_user_code()
                 session = self._login(expected)
                 self._mark_account_valid(session.user_code)
                 self._capture_browser.request_reset()
@@ -161,7 +167,7 @@ class NativeLoginBridge:
                 result["user_code"] = projected_user_code.value
             return result
 
-    def _login(self, expected: UserCode):
+    def _login(self, expected: UserCode | None) -> AuthSession:
         """Run the interactive browser and keep its session local to DPAPI."""
         service = LoginService(
             auth_browser=PlaywrightAuthBrowser(
@@ -173,13 +179,12 @@ class NativeLoginBridge:
         )
         return service.login(expected)
 
-    def _assert_account_scope(self, expected: UserCode) -> None:
-        """Prevent a second account from mixing with this single-account database."""
+    def _projected_account_user_code(self) -> UserCode | None:
+        """Return the existing single-account code, if the app already owns one."""
         session = self._session_factory()
         try:
             account = session.get(AccountModel, 1)
-            if account is not None and account.user_code != expected.value:
-                raise error_from_code("SESSION.ACCOUNT_MISMATCH")
+            return None if account is None else UserCode.parse(account.user_code)
         finally:
             session.close()
 
@@ -216,7 +221,7 @@ class NativeLoginBridge:
         finally:
             session.close()
 
-    def collect_profile(self) -> dict[str, bool | str]:
+    def collect_profile(self) -> dict[str, bool | str | int]:
         """Admit one profile capture into the single collection queue."""
         return self._request_collection("PROFILE")
 
@@ -308,8 +313,9 @@ class NativeLoginBridge:
                     delete(MatchObservationModel).where(MatchObservationModel.match_id.in_(match_ids))
                 )
                 deleted = session.execute(delete(MatchModel).where(MatchModel.account_id == 1))
+                deleted_count = int(getattr(deleted, "rowcount", 0) or 0)
                 session.commit()
-            return {"ok": True, "cleared": int(deleted.rowcount or 0)}
+            return {"ok": True, "cleared": deleted_count}
         except Exception:
             session.rollback()
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
@@ -449,10 +455,17 @@ class NativeLoginBridge:
             profile = session.scalar(
                 select(ProfileSnapshotModel)
                 .where(ProfileSnapshotModel.account_id == 1)
-                .order_by(ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc())
+                .order_by(
+                    ProfileSnapshotModel.observed_at_ms.desc(),
+                    ProfileSnapshotModel.id.desc(),
+                )
                 .limit(1)
             )
-            if profile is None or not isinstance(profile.display_name, str) or not profile.display_name.strip():
+            if (
+                profile is None
+                or not isinstance(profile.display_name, str)
+                or not profile.display_name.strip()
+            ):
                 raise error_from_code("DATA.IDENTITY_GROUP_INCOMPLETE")
             return auth, profile.display_name
         finally:
@@ -472,7 +485,9 @@ class AutoCollectionScheduler:
         self._interval_seconds = interval_seconds
         self._stopped = Event()
         self._thread: Thread | None = None
-        self._manual_requests: Queue[tuple[str, Event, dict[str, bool | str | int]] | None] = Queue()
+        self._manual_requests: Queue[
+            tuple[str, Event, dict[str, bool | str | int]] | None
+        ] = Queue()
         self._bridge.set_collection_dispatcher(self.request)
 
     def start(self) -> None:
@@ -677,10 +692,8 @@ def _bind_loopback_socket() -> socket.socket:
 
 def _close_socket(bound_socket: socket.socket) -> None:
     """Close a socket once; repeated cleanup remains harmless."""
-    try:
+    with suppress(OSError):
         bound_socket.close()
-    except OSError:
-        pass
 
 
 def _web_assets_directory() -> Path:
