@@ -19,3 +19,9 @@ debug_*.png
 .vscode/
 .superpowers/
 .worktrees/
+.venv/
+frontend/dist/
+.coverage
+.mypy_cache/
+.pytest_cache/
+src/sf6viewer/web/
