@@ -8,6 +8,7 @@ material never cross this boundary.
 
 from __future__ import annotations
 
+import re
 import socket
 from collections.abc import Callable
 from pathlib import Path
@@ -17,9 +18,15 @@ from time import monotonic
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from playwright.sync_api import Page
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from sf6viewer.application.services.login_service import LoginService
+from sf6viewer.domain.errors import DomainError
+from sf6viewer.domain.value_objects import UserCode
+from sf6viewer.infrastructure.auth.dpapi_vault import DpapiAuthVault
+from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
 from sf6viewer.infrastructure.db.engine import (
     create_engine_for,
     create_session_factory,
@@ -31,10 +38,69 @@ from sf6viewer.interfaces.api import create_read_api
 LOOPBACK_HOST = "127.0.0.1"
 SERVER_START_TIMEOUT_SECONDS = 10.0
 SERVER_STOP_TIMEOUT_SECONDS = 10.0
+BUCKLER_KOREAN_URL = "https://www.streetfighter.com/6/buckler/ko-kr"
+AUTHENTICATED_PROFILE_TIMEOUT_MS = 120_000
+_PROFILE_USER_CODE_PATTERN = re.compile(r"(?:^|/)profile/([0-9]{10})(?:/|$|[?#])")
 
 
 class DesktopStartupError(RuntimeError):
     """Raised when the local desktop host cannot become ready safely."""
+
+
+class NativeLoginBridge:
+    """Expose only a minimal, safe native sign-in operation to pywebview."""
+
+    def __init__(self, paths: AppPaths) -> None:
+        self._paths = paths
+
+    def login(self, expected_user_code: object) -> dict[str, bool | str]:
+        """Authenticate an exact account without exposing browser session material."""
+        try:
+            expected = UserCode.parse(expected_user_code)
+            service = LoginService(
+                auth_browser=PlaywrightAuthBrowser(
+                    target_url=BUCKLER_KOREAN_URL,
+                    wait_for_authenticated=_wait_for_authenticated_profile,
+                    extract_user_code=_extract_profile_user_code,
+                ),
+                vault=DpapiAuthVault(self._paths),
+            )
+            session = service.login(expected)
+            return {"ok": True, "user_code": session.user_code.value}
+        except DomainError as error:
+            return {"ok": False, "code": error.code}
+        except Exception:
+            # The JavaScript caller must never receive exceptions, URLs, or
+            # browser/authentication material.  It recognizes this catalog code.
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+
+def _wait_for_authenticated_profile(page: Page) -> None:
+    """Wait a finite time for an authenticated Buckler profile link to appear."""
+    page.wait_for_function(
+        """() => Array.from(document.querySelectorAll('a[href]')).some((link) =>
+        /(?:^|\\/)profile\\/[0-9]{10}(?:\\/|$|[?#])/.test(link.getAttribute('href') || '')
+        )""",
+        timeout=AUTHENTICATED_PROFILE_TIMEOUT_MS,
+    )
+
+
+def _extract_profile_user_code(page: Page) -> str:
+    """Return the exact ten-digit account code from an authenticated profile href."""
+    profile_hrefs = page.locator("a[href*='/profile/']").evaluate_all(
+        "(links) => links.map((link) => link.getAttribute('href'))"
+    )
+    if not isinstance(profile_hrefs, list):
+        raise RuntimeError("Authenticated profile is unavailable.")
+
+    for href in profile_hrefs:
+        if not isinstance(href, str):
+            continue
+        matched = _PROFILE_USER_CODE_PATTERN.search(href)
+        if matched is not None:
+            return matched.group(1)
+
+    raise RuntimeError("Authenticated profile is unavailable.")
 
 
 class LoopbackServer:
@@ -154,7 +220,7 @@ def _compose_application(session_factory: Callable[[], Session]) -> FastAPI:
     return app
 
 
-def _open_desktop_window(url: str) -> None:
+def _open_desktop_window(url: str, *, js_api: object) -> None:
     """Open the same-origin dashboard and block until its pywebview window closes."""
     import webview
 
@@ -164,6 +230,7 @@ def _open_desktop_window(url: str) -> None:
         width=1280,
         height=800,
         min_size=(900, 600),
+        js_api=js_api,
     )
     webview.start(debug=False, http_server=False, private_mode=True)
 
@@ -212,7 +279,7 @@ def run_desktop() -> int:
         application = _compose_application(create_session_factory(engine))
         server = LoopbackServer(application)
         server.start()
-        _open_desktop_window(server.dashboard_url)
+        _open_desktop_window(server.dashboard_url, js_api=NativeLoginBridge(paths))
         return 0
     except Exception:
         if server is not None:

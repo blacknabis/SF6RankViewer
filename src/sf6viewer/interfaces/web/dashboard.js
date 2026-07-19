@@ -1,7 +1,16 @@
 "use strict";
 
 const POLL_INTERVAL_MS = 12_000;
+const USER_CODE_PATTERN = /^\d{10}$/;
+const LOGIN_MESSAGES = Object.freeze({
+  "VALIDATION.USER_CODE": "10자리 사용자 코드를 확인하세요.",
+  "SESSION.ACCOUNT_MISMATCH": "입력한 사용자 코드와 로그인한 계정이 다릅니다.",
+  "UPSTREAM.TIMEOUT": "로그인 확인 시간이 초과되었습니다. 다시 시도하세요.",
+  "UPSTREAM.UNAVAILABLE": "로그인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
+  "INTERNAL.UNEXPECTED": "로그인을 완료할 수 없습니다. 잠시 후 다시 시도하세요."
+});
 let refreshInFlight = false;
+let loginInFlight = false;
 
 const byId = (id) => document.getElementById(id);
 const text = (value, fallback = "—") => value === null || value === undefined || value === "" ? fallback : String(value);
@@ -26,6 +35,75 @@ function setState(state, message) {
   const element = byId("page-state");
   element.dataset.state = state;
   element.textContent = message;
+}
+
+function setLoginStatus(message) {
+  byId("login-status").textContent = message;
+}
+
+function nativeLoginApi() {
+  const bridge = window.pywebview && window.pywebview.api;
+  return bridge && typeof bridge.login === "function" ? bridge : null;
+}
+
+function updateLoginAvailability() {
+  if (loginInFlight) return;
+  const submit = byId("login-submit");
+  const wasDisabled = submit.disabled;
+  const available = nativeLoginApi() !== null;
+  submit.disabled = !available;
+  if (!available) {
+    setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
+  } else if (wasDisabled) {
+    setLoginStatus("내 계정의 10자리 사용자 코드를 입력한 뒤 로그인하세요.");
+  }
+}
+
+function safeLoginMessage(code) {
+  return LOGIN_MESSAGES[code] || LOGIN_MESSAGES["INTERNAL.UNEXPECTED"];
+}
+
+async function beginLogin(event) {
+  event.preventDefault();
+  if (loginInFlight) return;
+
+  const input = byId("expected-user-code");
+  const expectedUserCode = input.value.trim();
+  if (!USER_CODE_PATTERN.test(expectedUserCode)) {
+    setLoginStatus(LOGIN_MESSAGES["VALIDATION.USER_CODE"]);
+    input.focus();
+    return;
+  }
+
+  const bridge = nativeLoginApi();
+  if (!bridge) {
+    updateLoginAvailability();
+    return;
+  }
+
+  loginInFlight = true;
+  const form = byId("login-form");
+  const submit = byId("login-submit");
+  input.disabled = true;
+  submit.disabled = true;
+  form.setAttribute("aria-busy", "true");
+  setLoginStatus("브라우저에서 로그인을 완료하세요. 로그인 확인 중에는 이 화면을 유지합니다.");
+
+  try {
+    const result = await bridge.login(expectedUserCode);
+    if (result && result.ok === true && result.user_code === expectedUserCode) {
+      setLoginStatus("로그인이 완료되었습니다. 인증 정보는 이 Windows 사용자 계정에 안전하게 저장되었습니다.");
+    } else {
+      setLoginStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+    }
+  } catch (_) {
+    setLoginStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
+  } finally {
+    loginInFlight = false;
+    input.disabled = false;
+    form.removeAttribute("aria-busy");
+    submit.disabled = nativeLoginApi() === null;
+  }
 }
 
 function clear(element) { while (element.firstChild) element.removeChild(element.firstChild); }
@@ -116,13 +194,16 @@ async function refresh() {
     setConnection("ok", "로컬 서비스 연결됨");
     setState("ok", system.match_count ? "최신 로컬 데이터를 표시합니다." : "아직 수집된 데이터가 없습니다. 로그인을 완료한 뒤 수집을 시작하세요.");
     byId("last-refresh").textContent = `마지막 갱신: ${timestamp(Date.now())}`;
-  } catch (error) {
+  } catch (_) {
     setConnection("error", "로컬 서비스에 연결할 수 없음");
-    setState("error", `데이터를 불러오지 못했습니다. ${error instanceof Error ? error.message : "잠시 후 다시 시도합니다."}`);
+    setState("error", "데이터를 불러오지 못했습니다. 잠시 후 다시 시도합니다.");
   } finally {
     refreshInFlight = false;
   }
 }
 
+byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
+window.addEventListener("pywebviewready", updateLoginAvailability);
+window.setTimeout(updateLoginAvailability, 0);
 void refresh();
 window.setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);

@@ -26,6 +26,17 @@
         데이터를 안전하게 불러오는 중입니다.
       </section>
 
+      <section class="panel" aria-labelledby="login-heading">
+        <h2 id="login-heading">Buckler 로그인</h2>
+        <form id="login-form" novalidate>
+          <label for="expected-user-code">로그인할 계정의 사용자 코드</label>
+          <input id="expected-user-code" name="expected-user-code" type="text" inputmode="numeric" autocomplete="off" pattern="[0-9]{10}" minlength="10" maxlength="10" required aria-describedby="login-help login-status">
+          <p id="login-help" class="muted">내 계정의 10자리 사용자 코드를 입력한 뒤 로그인하세요.</p>
+          <button id="login-submit" type="submit" disabled>로그인 시작</button>
+        </form>
+        <p id="login-status" role="status" aria-live="polite">데스크톱 로그인 연결을 준비 중입니다.</p>
+      </section>
+
       <section class="summary-grid" aria-label="시스템 현황">
         <article class="summary-card"><span>대전 기록</span><strong id="match-count">—</strong></article>
         <article class="summary-card"><span>프로필 스냅샷</span><strong id="profile-count">—</strong></article>
