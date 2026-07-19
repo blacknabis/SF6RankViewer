@@ -37,21 +37,18 @@ _FALLBACK_KEY = re.compile(r"fb:[0-9a-f]{64}:[1-9][0-9]*\Z")
 
 
 @dataclass(frozen=True, slots=True)
-class CollectedMatch:
-    """One parsed match plus its immutable, JSON-compatible raw evidence.
+class CollectedRawMatch:
+    """One immutable raw match payload and collection-time provenance.
 
-    ``fallback_identity_key`` is accepted only when a caller has already
-    completed fallback grouping.  This layer never derives fallback keys from
-    a raw ordinal or from other collected matches.
+    This type intentionally contains no normalized match facts.  Its payload
+    is stored (and flushed) as ``PENDING`` before a caller-provided normalizer
+    is allowed to inspect it.
     """
 
-    facts: MatchFacts
     raw_payload: Mapping[str, JsonValue]
     ordinal: int
     fetched_at_ms: int
-    source_id: str | None = None
-    hydration_key: str | None = None
-    fallback_identity_key: str | None = None
+    source_key: str | None = None
     _canonical_payload: bytes = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -72,6 +69,24 @@ class CollectedMatch:
     def canonical_payload(self) -> bytes:
         """Return the canonical uncompressed JSON bytes prepared at construction."""
         return self._canonical_payload
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedMatch:
+    """A normalizer's safe interpretation of one persisted raw payload.
+
+    ``fallback_identity_key`` is accepted only when the normalizer has already
+    completed fallback grouping.  This layer never derives fallback keys from
+    an ordinal or from other raw records.
+    """
+
+    facts: MatchFacts
+    source_id: str | None = None
+    hydration_key: str | None = None
+    fallback_identity_key: str | None = None
+
+
+Normalizer: TypeAlias = Callable[[Mapping[str, JsonValue]], NormalizedMatch]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +128,8 @@ class RawFirstCollectionService:
         raw_records: RawRecordRepository,
         quarantines: QuarantineRepository,
         ingestion: CollectionIngestion,
-        collected_matches: Sequence[CollectedMatch],
+        collected_matches: Sequence[CollectedRawMatch],
+        normalizer: Normalizer,
     ) -> CollectionPersistResult:
         """Persist and fully account for a collection in the caller's UoW.
 
@@ -129,10 +145,12 @@ class RawFirstCollectionService:
         ):
             raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
         matches = tuple(collected_matches)
-        if any(not isinstance(match, CollectedMatch) for match in matches):
+        if any(not isinstance(match, CollectedRawMatch) for match in matches):
             raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
         if len({match.ordinal for match in matches}) != len(matches):
             raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
+        if not callable(normalizer):
+            raise TypeError("normalizer must be callable")
 
         normalized_count = 0
         duplicate_count = 0
@@ -140,13 +158,31 @@ class RawFirstCollectionService:
 
         for collected in matches:
             raw_record = self._raw_record(ingestion, collected)
+            # RawRecordRepository.add must flush the PENDING row before it
+            # returns.  No parser or normalizer has run before this boundary.
             raw_records.add(raw_record)
 
             try:
-                match = self._match_record(ingestion, collected)
+                _validate_source_key(collected.source_key)
+                normalized = normalizer(collected.raw_payload)
+                match = self._match_record(ingestion, collected, normalized)
             except DomainError as exc:
                 self._quarantine(
-                    quarantines, raw_records, raw_record, ingestion.account_id, exc.code
+                    quarantines,
+                    raw_records,
+                    raw_record,
+                    ingestion.account_id,
+                    exc.code,
+                )
+                quarantine_count += 1
+                continue
+            except (KeyError, TypeError, ValueError):
+                self._quarantine(
+                    quarantines,
+                    raw_records,
+                    raw_record,
+                    ingestion.account_id,
+                    "UPSTREAM.CONTRACT_CHANGED",
                 )
                 quarantine_count += 1
                 continue
@@ -213,13 +249,15 @@ class RawFirstCollectionService:
         )
         return result
 
-    def _raw_record(self, ingestion: CollectionIngestion, collected: CollectedMatch) -> RawRecord:
+    def _raw_record(
+        self, ingestion: CollectionIngestion, collected: CollectedRawMatch
+    ) -> RawRecord:
         return RawRecord(
             id=self._new_id(),
             ingestion_id=ingestion.ingestion_id,
             ordinal=collected.ordinal,
             record_type="MATCH",
-            source_key=_source_key(collected),
+            source_key=_persisted_source_key(collected.source_key),
             payload_json=zlib.compress(collected.canonical_payload),
             payload_sha256=hashlib.sha256(collected.canonical_payload).hexdigest(),
             fetched_at_ms=collected.fetched_at_ms,
@@ -228,11 +266,16 @@ class RawFirstCollectionService:
         )
 
     def _match_record(
-        self, ingestion: CollectionIngestion, collected: CollectedMatch
+        self,
+        ingestion: CollectionIngestion,
+        collected: CollectedRawMatch,
+        normalized: NormalizedMatch,
     ) -> MatchRecord:
-        _validate_facts(collected.facts)
-        resolved_key, identity_kind = _resolve_identity(collected)
-        facts = collected.facts
+        if not isinstance(normalized, NormalizedMatch):
+            raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
+        _validate_facts(normalized.facts)
+        resolved_key, identity_kind = _resolve_identity(normalized)
+        facts = normalized.facts
         return MatchRecord(
             id=self._new_id(),
             account_id=ingestion.account_id,
@@ -305,31 +348,31 @@ def _freeze_json_value(value: object) -> JsonValue:
     raise TypeError("raw payload contains a non-JSON value")
 
 
-def _source_key(collected: CollectedMatch) -> str | None:
-    """Return only a canonical upstream identifier suitable for raw provenance."""
-    try:
-        if collected.source_id is not None:
-            return identity_key(collected.facts, source_id=collected.source_id)[4:]
-        if collected.hydration_key is not None:
-            return identity_key(collected.facts, hydration_key=collected.hydration_key)[4:]
-    except DomainError:
-        # Invalid identifiers still receive raw-first persistence and quarantine.
-        return None
-    return None
-
-
-def _resolve_identity(collected: CollectedMatch) -> tuple[str, str]:
-    if collected.source_id is not None:
-        return identity_key(collected.facts, source_id=collected.source_id), "SOURCE_ID"
-    if collected.hydration_key is not None:
+def _resolve_identity(normalized: NormalizedMatch) -> tuple[str, str]:
+    if normalized.source_id is not None:
+        return identity_key(normalized.facts, source_id=normalized.source_id), "SOURCE_ID"
+    if normalized.hydration_key is not None:
         return (
-            identity_key(collected.facts, hydration_key=collected.hydration_key),
+            identity_key(normalized.facts, hydration_key=normalized.hydration_key),
             "HYDRATION_KEY",
         )
-    fallback_key = collected.fallback_identity_key
+    fallback_key = normalized.fallback_identity_key
     if not isinstance(fallback_key, str) or not _FALLBACK_KEY.fullmatch(fallback_key):
         raise error_from_code("DATA.IDENTITY_GROUP_INCOMPLETE")
     return fallback_key, "FALLBACK_GROUP"
+
+
+def _validate_source_key(source_key: object) -> None:
+    """Reject malformed provenance only after its payload has been persisted."""
+    if source_key is not None and (
+        not isinstance(source_key, str) or not source_key.strip()
+    ):
+        raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
+
+
+def _persisted_source_key(source_key: object) -> str | None:
+    """Keep malformed provenance from blocking the initial raw-evidence flush."""
+    return source_key if isinstance(source_key, str) and source_key.strip() else None
 
 
 def _validate_facts(facts: object) -> None:

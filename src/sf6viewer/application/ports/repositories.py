@@ -190,7 +190,11 @@ class RawRecordRepository(Protocol):
     """Repository operations for immutable raw collection evidence."""
 
     def add(self, raw_record: RawRecord) -> None:
-        """Add pending raw evidence to the caller's transaction."""
+        """Add and flush pending raw evidence in the caller's transaction.
+
+        The method may not invoke a parser or normalizer.  Callers can safely
+        interpret the raw payload only after this method returns.
+        """
         raise NotImplementedError
 
     def set_disposition(
