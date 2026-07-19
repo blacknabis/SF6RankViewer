@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from playwright.sync_api import Page
+
 from sf6viewer.application.services.raw_collection import (
     CollectedRawMatch,
     JsonValue,
@@ -42,29 +44,35 @@ class BucklerBattlelogCapture:
             raise error_from_code("VALIDATION.LIMIT")
         try:
             storage_state = _storage_state(session.storage_state)
-            page = self._browser.page_for(
-                user_code=session.user_code.value, storage_state=storage_state
-            )
-            response = page.goto(
-                _BATTLELOG_URL.format(user_code=session.user_code.value),
-                wait_until="domcontentloaded",
-                timeout=_PAGE_TIMEOUT_MS,
-            )
-            require_collectable_response(response)
-            raw_next_data = page.locator("script#__NEXT_DATA__").text_content(
-                timeout=_PAGE_TIMEOUT_MS
-            )
-            replay_entries = _replay_entries(raw_next_data)
-            fetched_at_ms = self._clock()
-            return [
-                CollectedRawMatch(
-                    raw_payload=entry,
-                    ordinal=ordinal,
-                    fetched_at_ms=fetched_at_ms,
-                    source_key=_optional_source_id(entry.get("replay_id")),
+            user_code = session.user_code.value
+
+            def capture_page(page: Page) -> list[CollectedRawMatch]:
+                response = page.goto(
+                    _BATTLELOG_URL.format(user_code=user_code),
+                    wait_until="domcontentloaded",
+                    timeout=_PAGE_TIMEOUT_MS,
                 )
-                for ordinal, entry in enumerate(replay_entries[:limit])
-            ]
+                require_collectable_response(response)
+                raw_next_data = page.locator("script#__NEXT_DATA__").text_content(
+                    timeout=_PAGE_TIMEOUT_MS
+                )
+                replay_entries = _replay_entries(raw_next_data)
+                fetched_at_ms = self._clock()
+                return [
+                    CollectedRawMatch(
+                        raw_payload=entry,
+                        ordinal=ordinal,
+                        fetched_at_ms=fetched_at_ms,
+                        source_key=_optional_source_id(entry.get("replay_id")),
+                    )
+                    for ordinal, entry in enumerate(replay_entries[:limit])
+                ]
+
+            return self._browser.run_with_recovery(
+                user_code=user_code,
+                storage_state=storage_state,
+                operation=capture_page,
+            )
         except Exception as error:
             if isinstance(error, DomainError):
                 raise error

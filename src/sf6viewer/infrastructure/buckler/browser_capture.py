@@ -1,8 +1,22 @@
 """Shared visible-browser lifecycle and response validation for Buckler capture."""
 
-from playwright.sync_api import Browser, BrowserContext, Page, Playwright, Response, sync_playwright
+from collections.abc import Callable
+from contextlib import suppress
+from typing import TypeVar, cast
+
+from playwright._impl._api_structures import StorageState
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    Response,
+    sync_playwright,
+)
 
 from sf6viewer.domain.errors import error_from_code
+
+CaptureResult = TypeVar("CaptureResult")
 
 
 def launch_visible_system_browser(playwright: Playwright) -> Browser:
@@ -43,7 +57,7 @@ class PersistentBucklerBrowser:
             self._playwright = sync_playwright().start()
             self._browser = launch_visible_system_browser(self._playwright)
             self._context = self._browser.new_context(
-                storage_state=storage_state,
+                storage_state=cast(StorageState, storage_state),
                 locale="ko-KR",
                 timezone_id="Asia/Seoul",
             )
@@ -52,20 +66,34 @@ class PersistentBucklerBrowser:
         assert self._page is not None
         return self._page
 
+    def run_with_recovery(
+        self,
+        *,
+        user_code: str,
+        storage_state: dict[str, object],
+        operation: Callable[[Page], CaptureResult],
+    ) -> CaptureResult:
+        """Reopen a user-closed browser and retry the interrupted capture once."""
+        for attempt in range(2):
+            page = self.page_for(user_code=user_code, storage_state=storage_state)
+            try:
+                return operation(page)
+            except Exception:
+                if attempt > 0 or not self._browser_session_closed():
+                    raise
+                self.request_reset()
+        raise RuntimeError("Browser recovery retry was exhausted.")
+
     def close(self) -> None:
         """Release the browser resources; repeated shutdown stays harmless."""
         for resource in (self._page, self._context, self._browser):
             if resource is None:
                 continue
-            try:
+            with suppress(Exception):
                 resource.close()
-            except Exception:
-                pass
         if self._playwright is not None:
-            try:
+            with suppress(Exception):
                 self._playwright.stop()
-            except Exception:
-                pass
         self._playwright = None
         self._browser = None
         self._context = None
@@ -81,8 +109,13 @@ class PersistentBucklerBrowser:
         return (
             self._reset_requested
             or self._user_code != user_code
-            or self._browser is None
-            or not self._browser.is_connected()
-            or self._page is None
-            or self._page.is_closed()
+            or self._browser_session_closed()
         )
+
+    def _browser_session_closed(self) -> bool:
+        if self._browser is None or self._page is None:
+            return True
+        try:
+            return not self._browser.is_connected() or self._page.is_closed()
+        except Exception:
+            return True

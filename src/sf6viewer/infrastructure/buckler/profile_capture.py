@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 
+from playwright.sync_api import Page
+
 from sf6viewer.application.services.profile_collection import (
     CollectedRawProfile,
     JsonValue,
@@ -34,23 +36,29 @@ class BucklerProfileCapture:
             raise error_from_code("SESSION.MISSING")
         try:
             storage_state = _storage_state(session.storage_state)
-            page = self._browser.page_for(
-                user_code=session.user_code.value, storage_state=storage_state
-            )
-            response = page.goto(
-                _PROFILE_URL.format(user_code=session.user_code.value),
-                wait_until="domcontentloaded",
-                timeout=_PAGE_TIMEOUT_MS,
-            )
-            require_collectable_response(response)
-            next_data = page.locator("script#__NEXT_DATA__").text_content(
-                timeout=_PAGE_TIMEOUT_MS
-            )
-            payload = _page_props(next_data)
-            return CollectedRawProfile(
-                raw_payload=payload,
-                fetched_at_ms=self._clock(),
-                source_key=f"profile:{session.user_code.value}",
+            user_code = session.user_code.value
+
+            def capture_page(page: Page) -> CollectedRawProfile:
+                response = page.goto(
+                    _PROFILE_URL.format(user_code=user_code),
+                    wait_until="domcontentloaded",
+                    timeout=_PAGE_TIMEOUT_MS,
+                )
+                require_collectable_response(response)
+                next_data = page.locator("script#__NEXT_DATA__").text_content(
+                    timeout=_PAGE_TIMEOUT_MS
+                )
+                payload = _page_props(next_data)
+                return CollectedRawProfile(
+                    raw_payload=payload,
+                    fetched_at_ms=self._clock(),
+                    source_key=f"profile:{user_code}",
+                )
+
+            return self._browser.run_with_recovery(
+                user_code=user_code,
+                storage_state=storage_state,
+                operation=capture_page,
             )
         except Exception as error:
             if isinstance(error, DomainError):
