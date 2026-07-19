@@ -42,10 +42,8 @@ from sf6viewer.domain.job import JobState
 from sf6viewer.domain.value_objects import UserCode
 from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession, DpapiAuthVault
 from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
-from sf6viewer.infrastructure.buckler.battlelog_capture import (
-    BucklerBattlelogCapture,
-    normalize_battlelog_match,
-)
+from sf6viewer.infrastructure.buckler.battlelog_capture import BucklerBattlelogCapture, normalize_battlelog_match
+from sf6viewer.infrastructure.buckler.browser_capture import PersistentBucklerBrowser
 from sf6viewer.infrastructure.buckler.profile_capture import BucklerProfileCapture, normalize_profile
 from sf6viewer.infrastructure.db.engine import (
     create_engine_for,
@@ -63,6 +61,7 @@ SERVER_START_TIMEOUT_SECONDS = 10.0
 SERVER_STOP_TIMEOUT_SECONDS = 10.0
 BUCKLER_KOREAN_URL = "https://www.streetfighter.com/6/buckler/ko-kr"
 AUTHENTICATED_PROFILE_TIMEOUT_MS = 120_000
+AUTO_COLLECTION_INTERVAL_SECONDS = 30.0
 _PROFILE_USER_CODE_PATTERN = re.compile(r"(?:^|/)profile/([0-9]{10})(?:/|$|[?#])")
 
 
@@ -88,6 +87,7 @@ class NativeLoginBridge:
         self._request_handlers: dict[str, Callable[[str], dict[str, bool | str | int]]] = {}
         self._collection_results: dict[str, dict[str, bool | str | int]] = {}
         self._coordinator = CollectionCoordinator(self._run_collection_request)
+        self._capture_browser = PersistentBucklerBrowser()
 
     def login(self, expected_user_code: object) -> dict[str, bool | str]:
         """Authenticate an exact account without exposing browser session material."""
@@ -97,6 +97,7 @@ class NativeLoginBridge:
                 self._assert_account_scope(expected)
                 session = self._login(expected)
                 self._mark_account_valid(session.user_code)
+                self._capture_browser.close()
             return {"ok": True, "user_code": session.user_code.value}
         except DomainError as error:
             return {"ok": False, "code": error.code}
@@ -217,7 +218,7 @@ class NativeLoginBridge:
         try:
             with self._lock:
                 session = self._load_active_session()
-                captured = BucklerProfileCapture(_now_ms).capture(session)
+                captured = BucklerProfileCapture(_now_ms, self._capture_browser).capture(session)
                 ingestion_id = _new_id()
                 with self._uow_factory.write() as uow:
                     uow.jobs.add(
@@ -265,7 +266,7 @@ class NativeLoginBridge:
         try:
             with self._lock:
                 session, own_display_name = self._load_collection_context()
-                captured = BucklerBattlelogCapture(_now_ms).capture(session)
+                captured = BucklerBattlelogCapture(_now_ms, self._capture_browser).capture(session)
                 ingestion_id = _new_id()
                 with self._uow_factory.write() as uow:
                     uow.jobs.add(
@@ -401,6 +402,40 @@ class NativeLoginBridge:
             return auth, profile.display_name
         finally:
             session.close()
+
+    def close(self) -> None:
+        """Close the app-owned collection browser during desktop shutdown."""
+        with self._lock:
+            self._capture_browser.close()
+
+
+class AutoCollectionScheduler:
+    """Refresh the local broadcast data without overlapping collection runs."""
+
+    def __init__(self, bridge: NativeLoginBridge, interval_seconds: float) -> None:
+        self._bridge = bridge
+        self._interval_seconds = interval_seconds
+        self._stopped = Event()
+        self._thread: Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("Auto collection scheduler has already been started.")
+        self._thread = Thread(target=self._run, name="sf6viewer-auto-collection", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+
+    def _run(self) -> None:
+        while not self._stopped.is_set():
+            started_at = monotonic()
+            self._bridge.collect_profile()
+            if not self._stopped.is_set():
+                self._bridge.collect_matches()
+            self._stopped.wait(max(0.0, self._interval_seconds - (monotonic() - started_at)))
 
 
 class _DiscardingEventPublisher:
@@ -622,6 +657,8 @@ def run_desktop() -> int:
     """
     engine: Engine | None = None
     server: LoopbackServer | None = None
+    bridge: NativeLoginBridge | None = None
+    scheduler: AutoCollectionScheduler | None = None
 
     try:
         paths = AppPaths.from_windows_local_app_data()
@@ -632,9 +669,12 @@ def run_desktop() -> int:
         application = _compose_application(session_factory)
         server = LoopbackServer(application)
         server.start()
+        bridge = NativeLoginBridge(paths, session_factory)
+        scheduler = AutoCollectionScheduler(bridge, AUTO_COLLECTION_INTERVAL_SECONDS)
+        scheduler.start()
         _open_desktop_window(
             server.dashboard_url,
-            js_api=NativeLoginBridge(paths, session_factory),
+            js_api=bridge,
         )
         return 0
     except Exception:
@@ -646,6 +686,10 @@ def run_desktop() -> int:
             return 1
         raise
     finally:
+        if scheduler is not None:
+            scheduler.stop()
+        if bridge is not None:
+            bridge.close()
         if server is not None:
             server.stop()
         if engine is not None:

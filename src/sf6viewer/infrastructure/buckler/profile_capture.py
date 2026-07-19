@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 
-from playwright.sync_api import Browser, BrowserContext, sync_playwright
-
 from sf6viewer.application.services.profile_collection import (
     CollectedRawProfile,
     JsonValue,
@@ -15,7 +13,7 @@ from sf6viewer.application.services.profile_collection import (
 from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession
 from sf6viewer.infrastructure.buckler.browser_capture import (
-    launch_visible_system_browser,
+    PersistentBucklerBrowser,
     require_collectable_response,
 )
 
@@ -26,55 +24,38 @@ _PAGE_TIMEOUT_MS = 45_000
 class BucklerProfileCapture:
     """Capture one profile page using only the DPAPI-restored storage state."""
 
-    def __init__(self, clock: Callable[[], int]) -> None:
+    def __init__(self, clock: Callable[[], int], browser: PersistentBucklerBrowser) -> None:
         self._clock = clock
+        self._browser = browser
 
     def capture(self, session: AuthSession) -> CollectedRawProfile:
         """Return page-props evidence; cookies and URLs never leave this adapter."""
         if not isinstance(session, AuthSession):
             raise error_from_code("SESSION.MISSING")
-        browser: Browser | None = None
-        context: BrowserContext | None = None
         try:
             storage_state = _storage_state(session.storage_state)
-            with sync_playwright() as playwright:
-                browser = launch_visible_system_browser(playwright)
-                context = browser.new_context(
-                    storage_state=storage_state,
-                    locale="ko-KR",
-                    timezone_id="Asia/Seoul",
-                )
-                page = context.new_page()
-                response = page.goto(
-                    _PROFILE_URL.format(user_code=session.user_code.value),
-                    wait_until="domcontentloaded",
-                    timeout=_PAGE_TIMEOUT_MS,
-                )
-                require_collectable_response(response)
-                next_data = page.locator("script#__NEXT_DATA__").text_content(
-                    timeout=_PAGE_TIMEOUT_MS
-                )
-                payload = _page_props(next_data)
-                return CollectedRawProfile(
-                    raw_payload=payload,
-                    fetched_at_ms=self._clock(),
-                    source_key=f"profile:{session.user_code.value}",
-                )
+            page = self._browser.page_for(
+                user_code=session.user_code.value, storage_state=storage_state
+            )
+            response = page.goto(
+                _PROFILE_URL.format(user_code=session.user_code.value),
+                wait_until="domcontentloaded",
+                timeout=_PAGE_TIMEOUT_MS,
+            )
+            require_collectable_response(response)
+            next_data = page.locator("script#__NEXT_DATA__").text_content(
+                timeout=_PAGE_TIMEOUT_MS
+            )
+            payload = _page_props(next_data)
+            return CollectedRawProfile(
+                raw_payload=payload,
+                fetched_at_ms=self._clock(),
+                source_key=f"profile:{session.user_code.value}",
+            )
         except Exception as error:
             if isinstance(error, DomainError):
                 raise error
             raise error_from_code("UPSTREAM.UNAVAILABLE") from None
-        finally:
-            if context is not None:
-                try:
-                    context.close()
-                except Exception:
-                    pass
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
 
 
 def normalize_profile(payload: Mapping[str, JsonValue]) -> NormalizedProfile:

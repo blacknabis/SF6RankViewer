@@ -8,8 +8,6 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from playwright.sync_api import Browser, BrowserContext, sync_playwright
-
 from sf6viewer.application.services.raw_collection import (
     CollectedRawMatch,
     JsonValue,
@@ -19,7 +17,7 @@ from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.domain.match import MatchFacts
 from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession
 from sf6viewer.infrastructure.buckler.browser_capture import (
-    launch_visible_system_browser,
+    PersistentBucklerBrowser,
     require_collectable_response,
 )
 
@@ -33,8 +31,9 @@ _SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,200}$")
 class BucklerBattlelogCapture:
     """Capture battle-log DOM evidence from a DPAPI-restored session."""
 
-    def __init__(self, clock: Callable[[], int]) -> None:
+    def __init__(self, clock: Callable[[], int], browser: PersistentBucklerBrowser) -> None:
         self._clock = clock
+        self._browser = browser
 
     def capture(self, session: AuthSession, *, limit: int = 20) -> list[CollectedRawMatch]:
         """Return raw immutable entries without parsing dates, ratings, or results."""
@@ -42,49 +41,31 @@ class BucklerBattlelogCapture:
             raise error_from_code("SESSION.MISSING")
         if type(limit) is not int or not 1 <= limit <= 100:
             raise error_from_code("VALIDATION.LIMIT")
-        browser: Browser | None = None
-        context: BrowserContext | None = None
         try:
             storage_state = _storage_state(session.storage_state)
-            with sync_playwright() as playwright:
-                browser = launch_visible_system_browser(playwright)
-                context = browser.new_context(
-                    storage_state=storage_state,
-                    locale="ko-KR",
-                    timezone_id="Asia/Seoul",
-                )
-                page = context.new_page()
-                response = page.goto(
-                    _BATTLELOG_URL.format(user_code=session.user_code.value),
-                    wait_until="domcontentloaded",
-                    timeout=_PAGE_TIMEOUT_MS,
-                )
-                require_collectable_response(response)
-                entries = page.locator("[class*='battle_data_battlelog__list'] > li").evaluate_all(
-                    _ENTRY_EXTRACTION_SCRIPT
-                )
-                if not isinstance(entries, list):
-                    raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
-                fetched_at_ms = self._clock()
-                return [
-                    _collected_entry(entry, ordinal, fetched_at_ms)
-                    for ordinal, entry in enumerate(entries[:limit])
-                ]
+            page = self._browser.page_for(
+                user_code=session.user_code.value, storage_state=storage_state
+            )
+            response = page.goto(
+                _BATTLELOG_URL.format(user_code=session.user_code.value),
+                wait_until="domcontentloaded",
+                timeout=_PAGE_TIMEOUT_MS,
+            )
+            require_collectable_response(response)
+            entries = page.locator("[class*='battle_data_battlelog__list'] > li").evaluate_all(
+                _ENTRY_EXTRACTION_SCRIPT
+            )
+            if not isinstance(entries, list):
+                raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
+            fetched_at_ms = self._clock()
+            return [
+                _collected_entry(entry, ordinal, fetched_at_ms)
+                for ordinal, entry in enumerate(entries[:limit])
+            ]
         except Exception as error:
             if isinstance(error, DomainError):
                 raise error
             raise error_from_code("UPSTREAM.UNAVAILABLE") from None
-        finally:
-            if context is not None:
-                try:
-                    context.close()
-                except Exception:
-                    pass
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
 
 
 def normalize_battlelog_match(
