@@ -18,3 +18,4 @@ debug_*.html
 debug_*.png
 .vscode/
 .superpowers/
+.worktrees/
