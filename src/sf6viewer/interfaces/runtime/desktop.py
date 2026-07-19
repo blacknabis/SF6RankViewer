@@ -24,6 +24,13 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
+from sf6viewer.application.services.collection_coordinator import (
+    CanonicalRequestKey,
+    CollectionAdmission,
+    CollectionCoordinator,
+    CollectionRequest,
+    CollectionRequestKind,
+)
 from sf6viewer.application.services.login_service import LoginService
 from sf6viewer.application.services.profile_collection import RawFirstProfileCollectionService
 from sf6viewer.application.services.raw_collection import (
@@ -77,6 +84,10 @@ class NativeLoginBridge:
             _DiscardingWarningSink(),
             _new_id,
         )
+        self._request_lock = Lock()
+        self._request_handlers: dict[str, Callable[[str], dict[str, bool | str | int]]] = {}
+        self._collection_results: dict[str, dict[str, bool | str | int]] = {}
+        self._coordinator = CollectionCoordinator(self._run_collection_request)
 
     def login(self, expected_user_code: object) -> dict[str, bool | str]:
         """Authenticate an exact account without exposing browser session material."""
@@ -150,12 +161,15 @@ class NativeLoginBridge:
             session.close()
 
     def collect_profile(self) -> dict[str, bool | str]:
+        """Admit one profile capture into the single collection queue."""
+        return self._admit_collection("PROFILE", self._collect_profile)
+
+    def _collect_profile(self, job_id: str) -> dict[str, bool | str | int]:
         """Capture, preserve, and project the authenticated profile once."""
         try:
             with self._lock:
                 session = self._load_active_session()
                 captured = BucklerProfileCapture(_now_ms).capture(session)
-                job_id = _new_id()
                 ingestion_id = _new_id()
                 with self._uow_factory.write() as uow:
                     uow.jobs.add(
@@ -195,12 +209,15 @@ class NativeLoginBridge:
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
 
     def collect_matches(self) -> dict[str, bool | str | int]:
+        """Admit one ranked-battlelog capture into the single collection queue."""
+        return self._admit_collection("MATCHES", self._collect_matches)
+
+    def _collect_matches(self, job_id: str) -> dict[str, bool | str | int]:
         """Capture ranked matches, preserving raw entries before strict parsing."""
         try:
             with self._lock:
                 session, own_display_name = self._load_collection_context()
                 captured = BucklerBattlelogCapture(_now_ms).capture(session)
-                job_id = _new_id()
                 ingestion_id = _new_id()
                 with self._uow_factory.write() as uow:
                     uow.jobs.add(
@@ -249,6 +266,60 @@ class NativeLoginBridge:
             return {"ok": False, "code": error.code}
         except Exception:
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    def _admit_collection(
+        self,
+        key: str,
+        handler: Callable[[str], dict[str, bool | str | int]],
+    ) -> dict[str, bool | str | int]:
+        """Start, queue, or coalesce a native collection request safely."""
+        job_id = _new_id()
+        with self._request_lock:
+            self._request_handlers[job_id] = handler
+        try:
+            admission = self._coordinator.admit(
+                CollectionRequest(
+                    job_id=job_id,
+                    kind=CollectionRequestKind.COLLECT,
+                    key=CanonicalRequestKey(key),
+                )
+            )
+        except DomainError as error:
+            with self._request_lock:
+                self._request_handlers.pop(job_id, None)
+            return {"ok": False, "code": error.code}
+        except Exception:
+            with self._request_lock:
+                self._request_handlers.pop(job_id, None)
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+        if admission.admission is CollectionAdmission.COALESCED:
+            with self._request_lock:
+                self._request_handlers.pop(job_id, None)
+            return {"ok": True, "status": "COALESCED"}
+        if admission.admission is CollectionAdmission.QUEUED:
+            return {"ok": True, "status": "QUEUED"}
+        with self._request_lock:
+            return self._collection_results.pop(
+                job_id, {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+            )
+
+    def _run_collection_request(self, request: CollectionRequest) -> None:
+        """Execute one admitted request, retain its safe result, and promote the queue."""
+        with self._request_lock:
+            handler = self._request_handlers.pop(request.job_id, None)
+        if handler is None:
+            result: dict[str, bool | str | int] = {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        else:
+            try:
+                result = handler(request.job_id)
+            except DomainError as error:
+                result = {"ok": False, "code": error.code}
+            except Exception:
+                result = {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        with self._request_lock:
+            self._collection_results[request.job_id] = result
+        self._coordinator.complete(request.job_id)
 
     def _load_active_session(self) -> AuthSession:
         """Load DPAPI state only when it belongs to the database's one account."""

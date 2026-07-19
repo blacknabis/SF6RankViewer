@@ -86,12 +86,18 @@ async function collectProfile() {
   try {
     const result = await bridge.collect_profile();
     if (result && result.ok === true) {
-      setProfileCollectionStatus(
-        result.status === "NORMALIZED"
-          ? "프로필을 안전하게 저장했습니다."
-          : "원문은 저장했지만 현재 형식은 검토가 필요합니다."
-      );
-      await refresh();
+      if (result.status === "QUEUED") {
+        setProfileCollectionStatus("현재 수집이 끝나면 프로필 수집을 이어서 실행합니다.");
+      } else if (result.status === "COALESCED") {
+        setProfileCollectionStatus("동일한 프로필 수집 요청이 이미 진행 중입니다.");
+      } else {
+        setProfileCollectionStatus(
+          result.status === "NORMALIZED"
+            ? "프로필을 안전하게 저장했습니다."
+            : "원문은 저장했지만 현재 형식은 검토가 필요합니다."
+        );
+        await refresh();
+      }
     } else {
       setProfileCollectionStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
     }
@@ -121,9 +127,15 @@ async function collectMatches() {
   try {
     const result = await bridge.collect_matches();
     if (result && result.ok === true) {
-      const summary = `정규화 ${number(result.normalized)}건 · 중복 ${number(result.duplicates)}건 · 격리 ${number(result.quarantined)}건`;
-      setMatchCollectionStatus(summary);
-      await refresh();
+      if (result.status === "QUEUED") {
+        setMatchCollectionStatus("현재 수집이 끝나면 최근 대전을 수집합니다.");
+      } else if (result.status === "COALESCED") {
+        setMatchCollectionStatus("동일한 대전 수집 요청이 이미 진행 중입니다.");
+      } else {
+        const summary = `정규화 ${number(result.normalized)}건 · 중복 ${number(result.duplicates)}건 · 격리 ${number(result.quarantined)}건`;
+        setMatchCollectionStatus(summary);
+        await refresh();
+      }
     } else {
       setMatchCollectionStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
     }
