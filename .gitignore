@@ -18,6 +18,7 @@ debug_*.html
 debug_*.png
 .vscode/
 .superpowers/
+/docs/superpowers/
 .worktrees/
 .venv/
 frontend/dist/
