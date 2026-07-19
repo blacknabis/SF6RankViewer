@@ -581,6 +581,7 @@ class AutoCollectionScheduler:
 
     def _run(self) -> None:
         next_automatic_at = monotonic()
+        profile_pending = True
         try:
             while not self._stopped.is_set():
                 timeout = max(0.0, next_automatic_at - monotonic())
@@ -592,15 +593,25 @@ class AutoCollectionScheduler:
                 if request is not None:
                     key, completed, result = request
                     result.update(self._bridge.run_scheduled_collection(key))
+                    if key == "PROFILE" and result.get("ok") is True:
+                        profile_pending = False
                     completed.set()
                     next_automatic_at = monotonic() + self._interval_seconds
                     continue
 
                 if self._stopped.is_set():
                     break
-                self._bridge.run_scheduled_collection("PROFILE")
+                if profile_pending:
+                    profile_result = self._bridge.run_scheduled_collection("PROFILE")
+                    profile_pending = profile_result.get("ok") is not True
                 if not self._stopped.is_set():
-                    self._bridge.run_scheduled_collection("MATCHES")
+                    match_result = self._bridge.run_scheduled_collection("MATCHES")
+                    if match_result.get("code") in {
+                        "SESSION.MISSING",
+                        "SESSION.EXPIRED",
+                        "SESSION.ACCOUNT_MISMATCH",
+                    }:
+                        profile_pending = True
                 next_automatic_at = monotonic() + self._interval_seconds
         finally:
             self._bridge.close()
