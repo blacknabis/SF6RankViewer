@@ -105,6 +105,54 @@ class NativeLoginBridge:
             # browser/authentication material.  It recognizes this catalog code.
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
 
+    def auth_status(self) -> dict[str, bool | str]:
+        """Return only the projected account code and safe saved-session status."""
+        projected_user_code: UserCode | None = None
+        try:
+            with self._lock:
+                session = self._session_factory()
+                try:
+                    account = session.get(AccountModel, 1)
+                    if account is None:
+                        return {"ok": True, "authenticated": False}
+                    projected_user_code = UserCode.parse(account.user_code)
+                    auth_state = account.auth_state
+                finally:
+                    session.close()
+
+                result: dict[str, bool | str] = {
+                    "ok": True,
+                    "authenticated": False,
+                    "user_code": projected_user_code.value,
+                }
+                if auth_state != "VALID":
+                    return result
+                try:
+                    saved_session = DpapiAuthVault(self._paths).load()
+                    if saved_session is None or saved_session.user_code != projected_user_code:
+                        return result
+                    return {
+                        "ok": True,
+                        "authenticated": True,
+                        "user_code": projected_user_code.value,
+                    }
+                except Exception:
+                    return {
+                        **result,
+                        "code": "AUTH.SESSION_UNAVAILABLE",
+                    }
+        except Exception:
+            # Auth status is a read-only UI probe.  Keep vault/database errors
+            # private and make the caller fail closed without browser activity.
+            result = {
+                "ok": True,
+                "authenticated": False,
+                "code": "AUTH.SESSION_UNAVAILABLE",
+            }
+            if projected_user_code is not None:
+                result["user_code"] = projected_user_code.value
+            return result
+
     def _login(self, expected: UserCode):
         """Run the interactive browser and keep its session local to DPAPI."""
         service = LoginService(

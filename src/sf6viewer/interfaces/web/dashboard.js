@@ -23,6 +23,10 @@ const COLLECTION_MESSAGES = Object.freeze({
 });
 let refreshInFlight = false;
 let loginInFlight = false;
+let authProbeInFlight = false;
+let authProbeStarted = false;
+let savedSessionVerified = false;
+let authStatusEpoch = 0;
 
 const byId = (id) => document.getElementById(id);
 const text = (value, fallback = "—") => value === null || value === undefined || value === "" ? fallback : String(value);
@@ -59,15 +63,92 @@ function nativeLoginApi() {
 }
 
 function updateLoginAvailability() {
-  if (loginInFlight) return;
   const submit = byId("login-submit");
   const bridge = nativeLoginApi();
   const available = bridge !== null;
-  submit.disabled = !available;
-  byId("profile-collect").disabled = !available || typeof bridge.collect_profile !== "function";
-  byId("matches-collect").disabled = !available || typeof bridge.collect_matches !== "function";
+  const collectionAvailable = available && !loginInFlight && !authProbeInFlight && savedSessionVerified;
+  submit.disabled = !available || loginInFlight;
+  byId("profile-collect").disabled = !collectionAvailable || typeof bridge.collect_profile !== "function";
+  byId("matches-collect").disabled = !collectionAvailable || typeof bridge.collect_matches !== "function";
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
+  }
+}
+
+function applyAuthenticatedSession(userCode) {
+  const input = byId("expected-user-code");
+  input.value = userCode;
+  input.readOnly = true;
+  savedSessionVerified = true;
+  byId("login-submit").textContent = "다시 로그인";
+}
+
+function applyStoredUserCode(userCode) {
+  const input = byId("expected-user-code");
+  input.value = userCode;
+  input.readOnly = true;
+  savedSessionVerified = false;
+  byId("login-submit").textContent = "다시 로그인";
+}
+
+function applyManualLoginState() {
+  const input = byId("expected-user-code");
+  input.readOnly = false;
+  savedSessionVerified = false;
+  byId("login-submit").textContent = "로그인 시작";
+}
+
+function isSafeAuthStatus(result) {
+  return result && result.ok === true && typeof result.authenticated === "boolean";
+}
+
+async function restoreSavedSession() {
+  if (authProbeStarted || authProbeInFlight) return;
+
+  const bridge = nativeLoginApi();
+  if (!bridge) {
+    updateLoginAvailability();
+    return;
+  }
+  if (typeof bridge.auth_status !== "function") {
+    applyManualLoginState();
+    setLoginStatus("저장된 로그인 상태를 확인할 수 없습니다. 로그인 시작을 선택하세요.");
+    updateLoginAvailability();
+    return;
+  }
+
+  authProbeStarted = true;
+  authProbeInFlight = true;
+  const probeEpoch = authStatusEpoch;
+  updateLoginAvailability();
+  try {
+    const result = await bridge.auth_status();
+    if (probeEpoch !== authStatusEpoch) return;
+
+    const userCode = result && typeof result.user_code === "string" && USER_CODE_PATTERN.test(result.user_code)
+      ? result.user_code
+      : null;
+    if (!isSafeAuthStatus(result)) {
+      applyManualLoginState();
+      setLoginStatus("저장된 로그인 상태를 확인할 수 없습니다. 로그인 시작을 선택하세요.");
+    } else if (result.authenticated === true && userCode !== null) {
+      applyAuthenticatedSession(userCode);
+      setLoginStatus("저장된 로그인 세션을 사용 중입니다. 필요할 때만 다시 로그인하세요.");
+    } else if (userCode !== null) {
+      applyStoredUserCode(userCode);
+      setLoginStatus("저장된 사용자 코드를 불러왔습니다. 다시 로그인하세요.");
+    } else {
+      applyManualLoginState();
+      setLoginStatus("내 계정의 10자리 사용자 코드를 입력한 뒤 로그인하세요.");
+    }
+  } catch (_) {
+    if (probeEpoch === authStatusEpoch) {
+      applyManualLoginState();
+      setLoginStatus("저장된 로그인 상태를 확인할 수 없습니다. 로그인 시작을 선택하세요.");
+    }
+  } finally {
+    if (probeEpoch === authStatusEpoch) authProbeInFlight = false;
+    updateLoginAvailability();
   }
 }
 
@@ -195,6 +276,10 @@ async function beginLogin(event) {
   }
 
   loginInFlight = true;
+  authStatusEpoch += 1;
+  authProbeInFlight = false;
+  savedSessionVerified = false;
+  updateLoginAvailability();
   const form = byId("login-form");
   const submit = byId("login-submit");
   input.disabled = true;
@@ -205,6 +290,7 @@ async function beginLogin(event) {
   try {
     const result = await bridge.login(expectedUserCode);
     if (result && result.ok === true && result.user_code === expectedUserCode) {
+      applyAuthenticatedSession(expectedUserCode);
       setLoginStatus("로그인이 완료되었습니다. 인증 정보는 이 Windows 사용자 계정에 안전하게 저장되었습니다.");
     } else {
       setLoginStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
@@ -320,7 +406,7 @@ byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
 byId("profile-collect").addEventListener("click", () => { void collectProfile(); });
 byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
 configureObsUrl();
-window.addEventListener("pywebviewready", updateLoginAvailability);
-window.setTimeout(updateLoginAvailability, 0);
+window.addEventListener("pywebviewready", () => { void restoreSavedSession(); });
+window.setTimeout(() => { void restoreSavedSession(); }, 0);
 void refresh();
 window.setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);
