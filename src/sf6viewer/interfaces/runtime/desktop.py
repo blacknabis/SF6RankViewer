@@ -70,6 +70,7 @@ from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
 
 LOOPBACK_HOST = "127.0.0.1"
+LOOPBACK_PORT = 8000
 SERVER_START_TIMEOUT_SECONDS = 10.0
 SERVER_STOP_TIMEOUT_SECONDS = 10.0
 BUCKLER_KOREAN_URL = "https://www.streetfighter.com/6/buckler/ko-kr"
@@ -675,7 +676,7 @@ class LoopbackServer:
             uvicorn.Config(
                 app,
                 host=LOOPBACK_HOST,
-                port=0,
+                port=LOOPBACK_PORT,
                 access_log=False,
                 log_config=None,
                 log_level="warning",
@@ -689,8 +690,7 @@ class LoopbackServer:
     @property
     def url(self) -> str:
         """Return the only origin made available to the desktop webview."""
-        port = int(self._socket.getsockname()[1])
-        return f"http://{LOOPBACK_HOST}:{port}/"
+        return f"http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/"
 
     @property
     def dashboard_url(self) -> str:
@@ -735,18 +735,19 @@ class LoopbackServer:
 
 
 def _bind_loopback_socket() -> socket.socket:
-    """Bind and listen on a transient loopback port before Uvicorn starts.
+    """Bind and listen on the stable OBS loopback port before Uvicorn starts.
 
     The pre-bound socket is passed directly to Uvicorn.  This removes the
-    bind-after-selection race that a hard-coded or separately-probed port would
-    introduce, while the literal IPv4 loopback address prevents LAN exposure.
+    bind-after-selection race, while the literal IPv4 loopback address prevents
+    LAN exposure. A port conflict fails startup instead of silently changing the
+    saved OBS browser-source URL.
     """
     bound_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         exclusive_address_use = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
         if exclusive_address_use is not None:
             bound_socket.setsockopt(socket.SOL_SOCKET, exclusive_address_use, 1)
-        bound_socket.bind((LOOPBACK_HOST, 0))
+        bound_socket.bind((LOOPBACK_HOST, LOOPBACK_PORT))
         bound_socket.listen(socket.SOMAXCONN)
         bound_socket.setblocking(False)
         return bound_socket
