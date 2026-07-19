@@ -1,6 +1,6 @@
 """Legacy-source mapping."""
 
-from sqlalchemy import CheckConstraint, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sf6viewer.infrastructure.db.models.base import Base
