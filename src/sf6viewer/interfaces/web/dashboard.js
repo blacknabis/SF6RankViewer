@@ -11,6 +11,16 @@ const LOGIN_MESSAGES = Object.freeze({
   "UPSTREAM.UNAVAILABLE": "로그인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
   "INTERNAL.UNEXPECTED": "로그인을 완료할 수 없습니다. 잠시 후 다시 시도하세요."
 });
+const COLLECTION_MESSAGES = Object.freeze({
+  "SESSION.MISSING": "로그인 후 다시 시도하세요.",
+  "SESSION.EXPIRED": "로그인 세션이 만료되었습니다. 다시 로그인하세요.",
+  "SESSION.ACCOUNT_MISMATCH": "로그인 계정과 로컬 계정이 일치하지 않습니다.",
+  "UPSTREAM.TIMEOUT": "Buckler 페이지 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.",
+  "UPSTREAM.UNAVAILABLE": "Buckler 프로필 페이지에 연결할 수 없습니다. 로그인 상태를 확인한 뒤 다시 시도하세요.",
+  "UPSTREAM.CONTRACT_CHANGED": "Buckler 페이지 형식이 달라 원문을 안전하게 처리할 수 없습니다.",
+  "DATA.IDENTITY_GROUP_INCOMPLETE": "프로필 정보가 아직 없어 대전 기록을 정확하게 판별할 수 없습니다.",
+  "INTERNAL.UNEXPECTED": "수집을 완료할 수 없습니다. 잠시 후 다시 시도하세요."
+});
 let refreshInFlight = false;
 let loginInFlight = false;
 
@@ -65,6 +75,10 @@ function safeLoginMessage(code) {
   return LOGIN_MESSAGES[code] || LOGIN_MESSAGES["INTERNAL.UNEXPECTED"];
 }
 
+function safeCollectionMessage(code) {
+  return COLLECTION_MESSAGES[code] || COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"];
+}
+
 function setProfileCollectionStatus(message) {
   byId("profile-collect-status").textContent = message;
 }
@@ -96,10 +110,10 @@ async function collectProfile() {
         await refresh();
       }
     } else {
-      setProfileCollectionStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+      setProfileCollectionStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
     }
   } catch (_) {
-    setProfileCollectionStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
+    setProfileCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
   } finally {
     button.removeAttribute("aria-busy");
     updateLoginAvailability();
@@ -134,10 +148,10 @@ async function collectMatches() {
         await refresh();
       }
     } else {
-      setMatchCollectionStatus(safeLoginMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+      setMatchCollectionStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
     }
   } catch (_) {
-    setMatchCollectionStatus(LOGIN_MESSAGES["INTERNAL.UNEXPECTED"]);
+    setMatchCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
   } finally {
     button.removeAttribute("aria-busy");
     updateLoginAvailability();
