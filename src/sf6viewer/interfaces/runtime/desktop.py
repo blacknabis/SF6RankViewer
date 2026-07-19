@@ -13,7 +13,7 @@ import socket
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event, Lock, Thread
-from time import monotonic
+from time import monotonic, time
 
 import uvicorn
 from fastapi import FastAPI
@@ -23,7 +23,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.services.login_service import LoginService
-from sf6viewer.domain.errors import DomainError
+from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.domain.value_objects import UserCode
 from sf6viewer.infrastructure.auth.dpapi_vault import DpapiAuthVault
 from sf6viewer.infrastructure.buckler.playwright_auth import PlaywrightAuthBrowser
@@ -32,6 +32,7 @@ from sf6viewer.infrastructure.db.engine import (
     create_session_factory,
     run_migrations,
 )
+from sf6viewer.infrastructure.db.models.accounts import AccountModel
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
 
@@ -50,22 +51,19 @@ class DesktopStartupError(RuntimeError):
 class NativeLoginBridge:
     """Expose only a minimal, safe native sign-in operation to pywebview."""
 
-    def __init__(self, paths: AppPaths) -> None:
+    def __init__(self, paths: AppPaths, session_factory: Callable[[], Session]) -> None:
         self._paths = paths
+        self._session_factory = session_factory
+        self._lock = Lock()
 
     def login(self, expected_user_code: object) -> dict[str, bool | str]:
         """Authenticate an exact account without exposing browser session material."""
         try:
             expected = UserCode.parse(expected_user_code)
-            service = LoginService(
-                auth_browser=PlaywrightAuthBrowser(
-                    target_url=BUCKLER_KOREAN_URL,
-                    wait_for_authenticated=_wait_for_authenticated_profile,
-                    extract_user_code=_extract_profile_user_code,
-                ),
-                vault=DpapiAuthVault(self._paths),
-            )
-            session = service.login(expected)
+            with self._lock:
+                self._assert_account_scope(expected)
+                session = self._login(expected)
+                self._mark_account_valid(session.user_code)
             return {"ok": True, "user_code": session.user_code.value}
         except DomainError as error:
             return {"ok": False, "code": error.code}
@@ -73,6 +71,61 @@ class NativeLoginBridge:
             # The JavaScript caller must never receive exceptions, URLs, or
             # browser/authentication material.  It recognizes this catalog code.
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    def _login(self, expected: UserCode):
+        """Run the interactive browser and keep its session local to DPAPI."""
+        service = LoginService(
+            auth_browser=PlaywrightAuthBrowser(
+                target_url=BUCKLER_KOREAN_URL,
+                wait_for_authenticated=_wait_for_authenticated_profile,
+                extract_user_code=_extract_profile_user_code,
+            ),
+            vault=DpapiAuthVault(self._paths),
+        )
+        return service.login(expected)
+
+    def _assert_account_scope(self, expected: UserCode) -> None:
+        """Prevent a second account from mixing with this single-account database."""
+        session = self._session_factory()
+        try:
+            account = session.get(AccountModel, 1)
+            if account is not None and account.user_code != expected.value:
+                raise error_from_code("SESSION.ACCOUNT_MISMATCH")
+        finally:
+            session.close()
+
+    def _mark_account_valid(self, user_code: UserCode) -> None:
+        """Create or refresh the account projection only after DPAPI save succeeds."""
+        session = self._session_factory()
+        now_ms = int(time() * 1_000)
+        try:
+            account = session.get(AccountModel, 1)
+            if account is None:
+                session.add(
+                    AccountModel(
+                        id=1,
+                        user_code=user_code.value,
+                        display_name=None,
+                        main_character=None,
+                        rank_name=None,
+                        current_mr=None,
+                        current_lp=None,
+                        auth_state="VALID",
+                        created_at_ms=now_ms,
+                        updated_at_ms=now_ms,
+                    )
+                )
+            elif account.user_code == user_code.value:
+                account.auth_state = "VALID"
+                account.updated_at_ms = now_ms
+            else:
+                raise error_from_code("SESSION.ACCOUNT_MISMATCH")
+            session.commit()
+        except BaseException:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
 
 def _wait_for_authenticated_profile(page: Page) -> None:
@@ -276,10 +329,14 @@ def run_desktop() -> int:
         paths.ensure_directories()
         run_migrations(paths.database)
         engine = create_engine_for(paths)
-        application = _compose_application(create_session_factory(engine))
+        session_factory = create_session_factory(engine)
+        application = _compose_application(session_factory)
         server = LoopbackServer(application)
         server.start()
-        _open_desktop_window(server.dashboard_url, js_api=NativeLoginBridge(paths))
+        _open_desktop_window(
+            server.dashboard_url,
+            js_api=NativeLoginBridge(paths, session_factory),
+        )
         return 0
     except Exception:
         if server is not None:
