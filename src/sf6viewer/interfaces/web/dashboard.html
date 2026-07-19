@@ -37,6 +37,17 @@
         <p id="login-status" role="status" aria-live="polite">데스크톱 로그인 연결을 준비 중입니다.</p>
       </section>
 
+      <section class="panel" aria-labelledby="obs-heading">
+        <h2 id="obs-heading">OBS 브라우저 소스</h2>
+        <label for="obs-url">브라우저 소스 URL</label>
+        <div class="copy-row">
+          <input id="obs-url" type="text" readonly aria-describedby="obs-help obs-status">
+          <button id="obs-copy" type="button">복사</button>
+        </div>
+        <p id="obs-help" class="muted">OBS의 브라우저 소스 URL에 붙여 넣으세요. 앱을 다시 시작하면 주소가 바뀔 수 있습니다.</p>
+        <p id="obs-status" role="status" aria-live="polite"></p>
+      </section>
+
       <section class="summary-grid" aria-label="시스템 현황">
         <article class="summary-card"><span>대전 기록</span><strong id="match-count">—</strong></article>
         <article class="summary-card"><span>프로필 스냅샷</span><strong id="profile-count">—</strong></article>

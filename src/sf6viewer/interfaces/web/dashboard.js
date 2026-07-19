@@ -63,6 +63,24 @@ function safeLoginMessage(code) {
   return LOGIN_MESSAGES[code] || LOGIN_MESSAGES["INTERNAL.UNEXPECTED"];
 }
 
+function configureObsUrl() {
+  const input = byId("obs-url");
+  input.value = `${window.location.origin}/ui/obs.html`;
+}
+
+async function copyObsUrl() {
+  const input = byId("obs-url");
+  const status = byId("obs-status");
+  try {
+    await navigator.clipboard.writeText(input.value);
+    status.textContent = "OBS 주소를 복사했습니다.";
+  } catch (_) {
+    input.focus();
+    input.select();
+    status.textContent = "주소를 선택했습니다. Ctrl+C로 복사하세요.";
+  }
+}
+
 async function beginLogin(event) {
   event.preventDefault();
   if (loginInFlight) return;
@@ -203,6 +221,8 @@ async function refresh() {
 }
 
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
+byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
+configureObsUrl();
 window.addEventListener("pywebviewready", updateLoginAvailability);
 window.setTimeout(updateLoginAvailability, 0);
 void refresh();
