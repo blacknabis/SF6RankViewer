@@ -54,6 +54,16 @@ class SqlAlchemyMatchRepository:
             raise ValueError("observation content does not match a persisted match")
         self._session.add(MatchObservationModel(**_observation_values(observation)))
 
+    def get_by_identity(self, account_id: int, identity_key: str) -> MatchRecord | None:
+        """Return the canonical match record for an account-scoped identity key."""
+        model = self._session.scalar(
+            select(MatchModel).where(
+                MatchModel.account_id == account_id,
+                MatchModel.identity_key == identity_key,
+            )
+        )
+        return None if model is None else _to_record(model)
+
     def _ensure_writable(self) -> None:
         if self._read_only:
             raise RuntimeError(_READ_ONLY_MESSAGE)
@@ -89,3 +99,24 @@ def _observation_values(observation: ObservationRecord) -> dict[str, object]:
         "observed_content_sha256": observation.observed_content_sha256,
         "observed_at_ms": observation.observed_at_ms,
     }
+
+
+def _to_record(model: MatchModel) -> MatchRecord:
+    return MatchRecord(
+        id=model.id,
+        account_id=model.account_id,
+        identity_key=model.identity_key,
+        identity_kind=model.identity_kind,
+        content_sha256=model.content_sha256,
+        occurred_at_ms=model.occurred_at_ms,
+        occurred_at_source=model.occurred_at_source,
+        my_character=model.my_character,
+        my_mr=model.my_mr,
+        my_lp=model.my_lp,
+        opponent_name=model.opponent_name,
+        opponent_character=model.opponent_character,
+        opponent_mr=model.opponent_mr,
+        opponent_lp=model.opponent_lp,
+        result=model.result,
+        created_at_ms=model.created_at_ms,
+    )

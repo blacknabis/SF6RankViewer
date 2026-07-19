@@ -38,6 +38,28 @@ class SqlAlchemyIngestionRepository:
         )
         return [_to_record(model) for model in self._session.scalars(statement)]
 
+    def complete(
+        self,
+        ingestion_id: str,
+        *,
+        raw_count: int,
+        normalized_count: int,
+        duplicate_count: int,
+        quarantine_count: int,
+        finished_at_ms: int,
+    ) -> None:
+        """Persist final counts and mark the run completed in this transaction."""
+        self._ensure_writable()
+        ingestion = self._session.get(IngestionRunModel, ingestion_id)
+        if ingestion is None:
+            raise ValueError("ingestion run was not found")
+        ingestion.raw_count = raw_count
+        ingestion.normalized_count = normalized_count
+        ingestion.duplicate_count = duplicate_count
+        ingestion.quarantine_count = quarantine_count
+        ingestion.finished_at_ms = finished_at_ms
+        ingestion.state = "COMPLETED"
+
     def _ensure_writable(self) -> None:
         if self._read_only:
             raise RuntimeError(_READ_ONLY_MESSAGE)

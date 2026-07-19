@@ -82,6 +82,37 @@ class ObservationRecord:
     observed_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class RawRecord:
+    """Immutable raw evidence stored before its normalized interpretation."""
+
+    id: str
+    ingestion_id: str
+    ordinal: int
+    record_type: str
+    source_key: str | None
+    payload_json: bytes
+    payload_sha256: str
+    fetched_at_ms: int
+    disposition: str
+    disposed_at_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class QuarantineRecord:
+    """A safe normalization rejection linked to one raw evidence record."""
+
+    id: str
+    raw_record_id: str
+    account_id: int | None
+    reason_code: str
+    field_errors_json: str | None
+    status: str
+    created_at_ms: int
+    resolved_at_ms: int | None
+    resolution_match_id: str | None
+
+
 class InsertOutcome(str, Enum):
     """Result of inserting a match under its durable identity."""
 
@@ -125,6 +156,19 @@ class IngestionRepository(Protocol):
         """List ingestion runs that have durable raw data to resume."""
         raise NotImplementedError
 
+    def complete(
+        self,
+        ingestion_id: str,
+        *,
+        raw_count: int,
+        normalized_count: int,
+        duplicate_count: int,
+        quarantine_count: int,
+        finished_at_ms: int,
+    ) -> None:
+        """Persist final accounted-for counts and mark one run complete."""
+        raise NotImplementedError
+
 
 class MatchRepository(Protocol):
     """Repository operations for canonical matches and observations."""
@@ -135,4 +179,30 @@ class MatchRepository(Protocol):
 
     def add_observation(self, observation: ObservationRecord) -> None:
         """Add a raw observation only for matching persisted content."""
+        raise NotImplementedError
+
+    def get_by_identity(self, account_id: int, identity_key: str) -> MatchRecord | None:
+        """Find the canonical match holding an account-scoped identity key."""
+        raise NotImplementedError
+
+
+class RawRecordRepository(Protocol):
+    """Repository operations for immutable raw collection evidence."""
+
+    def add(self, raw_record: RawRecord) -> None:
+        """Add pending raw evidence to the caller's transaction."""
+        raise NotImplementedError
+
+    def set_disposition(
+        self, raw_record_id: str, disposition: str, *, disposed_at_ms: int
+    ) -> None:
+        """Make the raw record's one permitted disposition transition."""
+        raise NotImplementedError
+
+
+class QuarantineRepository(Protocol):
+    """Repository operations for open raw-normalization rejections."""
+
+    def add(self, quarantine: QuarantineRecord) -> None:
+        """Add a quarantine record to the caller's transaction."""
         raise NotImplementedError
