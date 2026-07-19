@@ -20,7 +20,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import Page
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
@@ -51,7 +51,11 @@ from sf6viewer.infrastructure.db.engine import (
     run_migrations,
 )
 from sf6viewer.infrastructure.db.models.accounts import AccountModel
+from sf6viewer.infrastructure.db.models.legacy_rows import LegacyRowModel
+from sf6viewer.infrastructure.db.models.match_observations import MatchObservationModel
+from sf6viewer.infrastructure.db.models.matches import MatchModel
 from sf6viewer.infrastructure.db.models.profile_snapshots import ProfileSnapshotModel
+from sf6viewer.infrastructure.db.models.quarantine_records import QuarantineRecordModel
 from sf6viewer.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
@@ -260,6 +264,34 @@ class NativeLoginBridge:
     def collect_matches(self) -> dict[str, bool | str | int]:
         """Admit one ranked-battlelog capture into the single collection queue."""
         return self._admit_collection("MATCHES", self._collect_matches)
+
+    def clear_matches(self) -> dict[str, bool | int | str]:
+        """Remove displayed match facts while preserving auth, profiles, and raw evidence."""
+        session = self._session_factory()
+        try:
+            with self._lock:
+                match_ids = select(MatchModel.id).where(MatchModel.account_id == 1)
+                session.execute(
+                    update(QuarantineRecordModel)
+                    .where(QuarantineRecordModel.resolution_match_id.in_(match_ids))
+                    .values(resolution_match_id=None)
+                )
+                session.execute(
+                    update(LegacyRowModel)
+                    .where(LegacyRowModel.match_id.in_(match_ids))
+                    .values(match_id=None)
+                )
+                session.execute(
+                    delete(MatchObservationModel).where(MatchObservationModel.match_id.in_(match_ids))
+                )
+                deleted = session.execute(delete(MatchModel).where(MatchModel.account_id == 1))
+                session.commit()
+            return {"ok": True, "cleared": int(deleted.rowcount or 0)}
+        except Exception:
+            session.rollback()
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        finally:
+            session.close()
 
     def _collect_matches(self, job_id: str) -> dict[str, bool | str | int]:
         """Capture ranked matches, preserving raw entries before strict parsing."""

@@ -24,6 +24,7 @@ const COLLECTION_MESSAGES = Object.freeze({
 });
 let refreshInFlight = false;
 let loginInFlight = false;
+let resetInFlight = false;
 let authProbeInFlight = false;
 let authProbeStarted = false;
 let savedSessionVerified = false;
@@ -71,6 +72,7 @@ function updateLoginAvailability() {
   submit.disabled = !available || loginInFlight;
   byId("profile-collect").disabled = !collectionAvailable || typeof bridge.collect_profile !== "function";
   byId("matches-collect").disabled = !collectionAvailable || typeof bridge.collect_matches !== "function";
+  byId("matches-reset").disabled = !available || resetInFlight || typeof bridge.clear_matches !== "function";
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
   }
@@ -235,6 +237,41 @@ async function collectMatches() {
   } catch (_) {
     setMatchCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
   } finally {
+    button.removeAttribute("aria-busy");
+    updateLoginAvailability();
+  }
+}
+
+function setMatchResetStatus(message) {
+  byId("matches-reset-status").textContent = message;
+}
+
+async function clearMatches() {
+  if (resetInFlight) return;
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.clear_matches !== "function") {
+    setMatchResetStatus("데스크톱 초기화 연결을 준비 중입니다.");
+    return;
+  }
+  if (!window.confirm("수집된 전적을 초기화할까요? 로그인 정보와 프로필은 유지됩니다.")) return;
+
+  resetInFlight = true;
+  updateLoginAvailability();
+  const button = byId("matches-reset");
+  button.setAttribute("aria-busy", "true");
+  setMatchResetStatus("수집된 전적을 초기화하고 있습니다.");
+  try {
+    const result = await bridge.clear_matches();
+    if (result && result.ok === true && Number.isInteger(result.cleared)) {
+      setMatchResetStatus(`전적 ${number(result.cleared)}건을 초기화했습니다. 자동 수집이 다음 주기에 최신 전적을 채웁니다.`);
+      await refresh();
+    } else {
+      setMatchResetStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+    }
+  } catch (_) {
+    setMatchResetStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
+  } finally {
+    resetInFlight = false;
     button.removeAttribute("aria-busy");
     updateLoginAvailability();
   }
@@ -406,6 +443,7 @@ byId("login-form").addEventListener("submit", (event) => { void beginLogin(event
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
 byId("profile-collect").addEventListener("click", () => { void collectProfile(); });
 byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
+byId("matches-reset").addEventListener("click", () => { void clearMatches(); });
 configureObsUrl();
 window.addEventListener("pywebviewready", () => { void restoreSavedSession(); });
 window.setTimeout(() => { void restoreSavedSession(); }, 0);
