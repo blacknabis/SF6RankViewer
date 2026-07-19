@@ -34,6 +34,7 @@ class PersistentBucklerBrowser:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._user_code: str | None = None
+        self._reset_requested = False
 
     def page_for(self, *, user_code: str, storage_state: dict[str, object]) -> Page:
         """Return the live page, recreating it only after account or browser changes."""
@@ -70,10 +71,16 @@ class PersistentBucklerBrowser:
         self._context = None
         self._page = None
         self._user_code = None
+        self._reset_requested = False
+
+    def request_reset(self) -> None:
+        """Make the capture worker replace this context before its next request."""
+        self._reset_requested = True
 
     def _needs_restart(self, user_code: str) -> bool:
         return (
-            self._user_code != user_code
+            self._reset_requested
+            or self._user_code != user_code
             or self._browser is None
             or not self._browser.is_connected()
             or self._page is None

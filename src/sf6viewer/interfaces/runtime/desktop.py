@@ -12,6 +12,7 @@ import re
 import socket
 from collections.abc import Callable
 from pathlib import Path
+from queue import Empty, Queue
 from threading import Event, RLock, Lock, Thread
 from time import monotonic, time
 
@@ -66,6 +67,7 @@ SERVER_STOP_TIMEOUT_SECONDS = 10.0
 BUCKLER_KOREAN_URL = "https://www.streetfighter.com/6/buckler/ko-kr"
 AUTHENTICATED_PROFILE_TIMEOUT_MS = 120_000
 AUTO_COLLECTION_INTERVAL_SECONDS = 30.0
+MANUAL_COLLECTION_TIMEOUT_SECONDS = 120.0
 _PROFILE_USER_CODE_PATTERN = re.compile(r"(?:^|/)profile/([0-9]{10})(?:/|$|[?#])")
 
 
@@ -92,6 +94,7 @@ class NativeLoginBridge:
         self._collection_results: dict[str, dict[str, bool | str | int]] = {}
         self._coordinator = CollectionCoordinator(self._run_collection_request)
         self._capture_browser = PersistentBucklerBrowser()
+        self._collection_dispatcher: Callable[[str], dict[str, bool | str | int]] | None = None
 
     def login(self, expected_user_code: object) -> dict[str, bool | str]:
         """Authenticate an exact account without exposing browser session material."""
@@ -101,7 +104,7 @@ class NativeLoginBridge:
                 self._assert_account_scope(expected)
                 session = self._login(expected)
                 self._mark_account_valid(session.user_code)
-                self._capture_browser.close()
+                self._capture_browser.request_reset()
             return {"ok": True, "user_code": session.user_code.value}
         except DomainError as error:
             return {"ok": False, "code": error.code}
@@ -215,7 +218,7 @@ class NativeLoginBridge:
 
     def collect_profile(self) -> dict[str, bool | str]:
         """Admit one profile capture into the single collection queue."""
-        return self._admit_collection("PROFILE", self._collect_profile)
+        return self._request_collection("PROFILE")
 
     def _collect_profile(self, job_id: str) -> dict[str, bool | str | int]:
         """Capture, preserve, and project the authenticated profile once."""
@@ -263,7 +266,27 @@ class NativeLoginBridge:
 
     def collect_matches(self) -> dict[str, bool | str | int]:
         """Admit one ranked-battlelog capture into the single collection queue."""
-        return self._admit_collection("MATCHES", self._collect_matches)
+        return self._request_collection("MATCHES")
+
+    def set_collection_dispatcher(
+        self, dispatcher: Callable[[str], dict[str, bool | str | int]]
+    ) -> None:
+        """Route browser work through the one thread that owns Playwright."""
+        self._collection_dispatcher = dispatcher
+
+    def run_scheduled_collection(self, key: str) -> dict[str, bool | str | int]:
+        """Run one collection request from the Playwright-owning scheduler thread."""
+        if key == "PROFILE":
+            return self._admit_collection("PROFILE", self._collect_profile)
+        if key == "MATCHES":
+            return self._admit_collection("MATCHES", self._collect_matches)
+        return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    def _request_collection(self, key: str) -> dict[str, bool | str | int]:
+        dispatcher = self._collection_dispatcher
+        if dispatcher is not None:
+            return dispatcher(key)
+        return self.run_scheduled_collection(key)
 
     def clear_matches(self) -> dict[str, bool | int | str]:
         """Remove displayed match facts while preserving auth, profiles, and raw evidence."""
@@ -449,6 +472,8 @@ class AutoCollectionScheduler:
         self._interval_seconds = interval_seconds
         self._stopped = Event()
         self._thread: Thread | None = None
+        self._manual_requests: Queue[tuple[str, Event, dict[str, bool | str | int]] | None] = Queue()
+        self._bridge.set_collection_dispatcher(self.request)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -458,16 +483,55 @@ class AutoCollectionScheduler:
 
     def stop(self) -> None:
         self._stopped.set()
+        self._manual_requests.put(None)
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
 
+    def request(self, key: str) -> dict[str, bool | str | int]:
+        """Run a manual request on the browser-owning scheduler thread."""
+        if self._stopped.is_set():
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        completed = Event()
+        result: dict[str, bool | str | int] = {}
+        self._manual_requests.put((key, completed, result))
+        if not completed.wait(MANUAL_COLLECTION_TIMEOUT_SECONDS):
+            return {"ok": False, "code": "UPSTREAM.TIMEOUT"}
+        return result
+
     def _run(self) -> None:
-        while not self._stopped.is_set():
-            started_at = monotonic()
-            self._bridge.collect_profile()
-            if not self._stopped.is_set():
-                self._bridge.collect_matches()
-            self._stopped.wait(max(0.0, self._interval_seconds - (monotonic() - started_at)))
+        next_automatic_at = monotonic()
+        try:
+            while not self._stopped.is_set():
+                timeout = max(0.0, next_automatic_at - monotonic())
+                try:
+                    request = self._manual_requests.get(timeout=timeout)
+                except Empty:
+                    request = None
+
+                if request is not None:
+                    key, completed, result = request
+                    result.update(self._bridge.run_scheduled_collection(key))
+                    completed.set()
+                    next_automatic_at = monotonic() + self._interval_seconds
+                    continue
+
+                if self._stopped.is_set():
+                    break
+                self._bridge.run_scheduled_collection("PROFILE")
+                if not self._stopped.is_set():
+                    self._bridge.run_scheduled_collection("MATCHES")
+                next_automatic_at = monotonic() + self._interval_seconds
+        finally:
+            self._bridge.close()
+            while True:
+                try:
+                    request = self._manual_requests.get_nowait()
+                except Empty:
+                    break
+                if request is not None:
+                    _, completed, result = request
+                    result.update({"ok": False, "code": "INTERNAL.UNEXPECTED"})
+                    completed.set()
 
 
 class _DiscardingEventPublisher:
