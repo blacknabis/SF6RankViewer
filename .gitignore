@@ -10,9 +10,11 @@ venv/
 build/
 dist/
 *.spec
+!packaging/*.spec
 *.db
 auth.json
 user_config.json
 debug_*.html
 debug_*.png
 .vscode/
+.superpowers/
