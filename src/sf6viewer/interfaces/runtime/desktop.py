@@ -22,7 +22,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import Page
-from sqlalchemy import Engine, and_, delete, or_, select, update
+from sqlalchemy import Engine, and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
@@ -60,12 +60,11 @@ from sf6viewer.infrastructure.db.engine import (
 )
 from sf6viewer.infrastructure.db.models.accounts import AccountModel
 from sf6viewer.infrastructure.db.models.ingestion_runs import IngestionRunModel
-from sf6viewer.infrastructure.db.models.legacy_rows import LegacyRowModel
-from sf6viewer.infrastructure.db.models.match_observations import MatchObservationModel
 from sf6viewer.infrastructure.db.models.matches import MatchModel
 from sf6viewer.infrastructure.db.models.profile_snapshots import ProfileSnapshotModel
 from sf6viewer.infrastructure.db.models.quarantine_records import QuarantineRecordModel
 from sf6viewer.infrastructure.db.models.raw_records import RawRecordModel
+from sf6viewer.infrastructure.db.models.settings import SettingsModel
 from sf6viewer.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
@@ -298,28 +297,41 @@ class NativeLoginBridge:
         return self.run_scheduled_collection(key)
 
     def clear_matches(self) -> dict[str, bool | int | str]:
-        """Remove displayed match facts while preserving auth, profiles, and raw evidence."""
+        """Move the visible-history baseline without mutating immutable match evidence."""
         session = self._session_factory()
         try:
             with self._lock:
-                match_ids = select(MatchModel.id).where(MatchModel.account_id == 1)
-                session.execute(
-                    update(QuarantineRecordModel)
-                    .where(QuarantineRecordModel.resolution_match_id.in_(match_ids))
-                    .values(resolution_match_id=None)
+                settings = session.get(SettingsModel, 1)
+                previous_reset_at_ms = (
+                    settings.match_reset_at_ms
+                    if settings is not None and settings.match_reset_at_ms is not None
+                    else -1
                 )
-                session.execute(
-                    update(LegacyRowModel)
-                    .where(LegacyRowModel.match_id.in_(match_ids))
-                    .values(match_id=None)
+                visible_count = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(MatchModel)
+                        .where(
+                            MatchModel.account_id == 1,
+                            MatchModel.occurred_at_ms > previous_reset_at_ms,
+                        )
+                    )
+                    or 0
                 )
-                session.execute(
-                    delete(MatchObservationModel).where(MatchObservationModel.match_id.in_(match_ids))
-                )
-                deleted = session.execute(delete(MatchModel).where(MatchModel.account_id == 1))
-                deleted_count = int(getattr(deleted, "rowcount", 0) or 0)
+                reset_at_ms = _now_ms()
+                if settings is None:
+                    session.add(
+                        SettingsModel(
+                            id=1,
+                            match_reset_at_ms=reset_at_ms,
+                            updated_at_ms=reset_at_ms,
+                        )
+                    )
+                else:
+                    settings.match_reset_at_ms = reset_at_ms
+                    settings.updated_at_ms = reset_at_ms
                 session.commit()
-            return {"ok": True, "cleared": deleted_count}
+            return {"ok": True, "cleared": visible_count}
         except Exception:
             session.rollback()
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}

@@ -23,6 +23,7 @@ from sf6viewer.infrastructure.db.models import (
     MatchModel,
     ProfileSnapshotModel,
     QuarantineRecordModel,
+    SettingsModel,
 )
 
 SessionFactory = Callable[[], Session]
@@ -342,6 +343,15 @@ def _record_summary_from_matches(matches: list[MatchModel]) -> ObsRecordSummary:
     )
 
 
+def _match_reset_at_ms(session: Session) -> int:
+    """Return the non-destructive lower bound for user-visible match history."""
+
+    settings = session.get(SettingsModel, 1)
+    if settings is None or settings.match_reset_at_ms is None:
+        return -1
+    return settings.match_reset_at_ms
+
+
 def create_read_api(session_factory: SessionFactory) -> FastAPI:
     """Create the v2 local read API.
 
@@ -377,8 +387,16 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
     def system_status(session: Annotated[Session, Depends(get_session)]) -> SystemResponse:
         """Provide aggregate safe state for the desktop application start screen."""
 
+        reset_at_ms = _match_reset_at_ms(session)
         return SystemResponse(
-            match_count=int(session.scalar(select(func.count()).select_from(MatchModel)) or 0),
+            match_count=int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(MatchModel)
+                    .where(MatchModel.occurred_at_ms > reset_at_ms)
+                )
+                or 0
+            ),
             profile_snapshot_count=int(
                 session.scalar(select(func.count()).select_from(ProfileSnapshotModel)) or 0
             ),
@@ -408,8 +426,11 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
     ) -> MatchPage:
         """List canonical matches, newest first, with deterministic tie-breaking."""
 
-        statement = select(MatchModel).order_by(
-            MatchModel.occurred_at_ms.desc(), MatchModel.id.desc()
+        reset_at_ms = _match_reset_at_ms(session)
+        statement = (
+            select(MatchModel)
+            .where(MatchModel.occurred_at_ms > reset_at_ms)
+            .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
         )
         records = session.scalars(
             statement.limit(page_size).offset((page - 1) * page_size)
@@ -417,7 +438,13 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         return MatchPage(
             items=tuple(_match_response(record) for record in records),
             page=_page_metadata(
-                session.scalar(select(func.count()).select_from(MatchModel)), page, page_size
+                session.scalar(
+                    select(func.count())
+                    .select_from(MatchModel)
+                    .where(MatchModel.occurred_at_ms > reset_at_ms)
+                ),
+                page,
+                page_size,
             ),
         )
 
@@ -523,9 +550,11 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
             ).limit(1)
         )
         recent_limit = 100
+        reset_at_ms = _match_reset_at_ms(session)
         recent_matches = list(
             session.scalars(
                 select(MatchModel)
+                .where(MatchModel.occurred_at_ms > reset_at_ms)
                 .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
                 .limit(recent_limit)
             ).all()
@@ -539,7 +568,9 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         opponent_player: ObsOpponentSummary | None = None
         if latest_match is not None:
             character_record = _record_summary(
-                session, MatchModel.opponent_character == latest_match.opponent_character
+                session,
+                MatchModel.occurred_at_ms > reset_at_ms,
+                MatchModel.opponent_character == latest_match.opponent_character,
             )
             opponent_character = ObsOpponentSummary(
                 label=latest_match.opponent_character,
@@ -547,7 +578,9 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
                 losses=character_record.losses,
             )
             player_record = _record_summary(
-                session, MatchModel.opponent_name == latest_match.opponent_name
+                session,
+                MatchModel.occurred_at_ms > reset_at_ms,
+                MatchModel.opponent_name == latest_match.opponent_name,
             )
             opponent_player = ObsOpponentSummary(
                 label=latest_match.opponent_name,
@@ -558,7 +591,10 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         mr_matches = list(
             session.scalars(
                 select(MatchModel)
-                .where(MatchModel.my_mr.is_not(None))
+                .where(
+                    MatchModel.occurred_at_ms > reset_at_ms,
+                    MatchModel.my_mr.is_not(None),
+                )
                 .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
                 .limit(recent_limit)
             ).all()
@@ -569,7 +605,7 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
             latest_job=_job_response(latest_job) if latest_job is not None else None,
             statistics=ObsStatistics(
                 recent_limit=recent_limit,
-                total=_record_summary(session),
+                total=_record_summary(session, MatchModel.occurred_at_ms > reset_at_ms),
                 recent=_record_summary_from_matches(recent_matches),
                 opponent_character=opponent_character,
                 opponent_player=opponent_player,
