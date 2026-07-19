@@ -22,7 +22,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from playwright.sync_api import Page
-from sqlalchemy import Engine, delete, select, update
+from sqlalchemy import Engine, and_, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
@@ -77,6 +77,8 @@ BUCKLER_KOREAN_URL = "https://www.streetfighter.com/6/buckler/ko-kr"
 AUTHENTICATED_PROFILE_TIMEOUT_MS = 120_000
 AUTO_COLLECTION_INTERVAL_SECONDS = 30.0
 MANUAL_COLLECTION_TIMEOUT_SECONDS = 120.0
+BUCKLER_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v2"
+STALE_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v1"
 _PROFILE_USER_CODE_PATTERN = re.compile(r"(?:^|/)profile/([0-9]{10})(?:/|$|[?#])")
 
 
@@ -325,7 +327,7 @@ class NativeLoginBridge:
             session.close()
 
     def ignore_legacy_quarantines(self) -> dict[str, bool | int | str]:
-        """Hide only open migration quarantines while preserving their evidence."""
+        """Hide stale migration/parser quarantines while preserving their evidence."""
         session = self._session_factory()
         try:
             with self._lock:
@@ -337,11 +339,29 @@ class NativeLoginBridge:
                     )
                     .where(IngestionRunModel.kind == "LEGACY_IMPORT")
                 )
+                stale_parser_raw_ids = (
+                    select(RawRecordModel.id)
+                    .join(
+                        IngestionRunModel,
+                        IngestionRunModel.id == RawRecordModel.ingestion_id,
+                    )
+                    .where(
+                        IngestionRunModel.parser_version == STALE_BATTLELOG_PARSER_VERSION,
+                        RawRecordModel.record_type == "MATCH",
+                    )
+                )
                 ignored = session.execute(
                     update(QuarantineRecordModel)
                     .where(
                         QuarantineRecordModel.status == "OPEN",
-                        QuarantineRecordModel.raw_record_id.in_(legacy_raw_ids),
+                        or_(
+                            QuarantineRecordModel.raw_record_id.in_(legacy_raw_ids),
+                            and_(
+                                QuarantineRecordModel.reason_code
+                                == "DATA.IDENTITY_GROUP_INCOMPLETE",
+                                QuarantineRecordModel.raw_record_id.in_(stale_parser_raw_ids),
+                            ),
+                        ),
                     )
                     .values(status="IGNORED", resolved_at_ms=_now_ms())
                 )
@@ -373,7 +393,8 @@ class NativeLoginBridge:
                     uow.ingestions.add(
                         IngestionRecord(
                             id=ingestion_id, job_id=job_id, account_id=1, kind="LIVE",
-                            parser_version="buckler-battlelog-v1", state="NORMALIZING",
+                            parser_version=BUCKLER_BATTLELOG_PARSER_VERSION,
+                            state="NORMALIZING",
                             started_at_ms=_now_ms(), finished_at_ms=None, raw_count=0,
                             normalized_count=0, duplicate_count=0, quarantine_count=0,
                             error_code=None, diagnostic_id=None,

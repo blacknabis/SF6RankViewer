@@ -243,13 +243,13 @@ async function ignoreLegacyQuarantines() {
     setLegacyQuarantineStatus("데스크톱 정리 연결을 준비 중입니다.");
     return;
   }
-  if (!window.confirm("이전 마이그레이션 검토 대기만 정리할까요? 원본 기록은 보존됩니다.")) return;
+  if (!window.confirm("이전 마이그레이션과 구형 파서의 검토 대기만 정리할까요? 원본 기록은 보존됩니다.")) return;
 
   legacyCleanupInFlight = true;
   updateLoginAvailability();
   const button = byId("legacy-quarantine-clear");
   button.setAttribute("aria-busy", "true");
-  setLegacyQuarantineStatus("이전 마이그레이션 검토 대기를 정리하고 있습니다.");
+  setLegacyQuarantineStatus("이전 마이그레이션과 구형 파서의 검토 대기를 정리하고 있습니다.");
   try {
     const result = await bridge.ignore_legacy_quarantines();
     if (result && result.ok === true && Number.isInteger(result.ignored)) {
