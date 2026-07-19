@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SF6Viewer OBS Overlay</title>
+    <link rel="stylesheet" href="/ui/obs.css">
+    <script src="/ui/obs.js" defer></script>
+  </head>
+  <body>
+    <main class="overlay" aria-live="polite" aria-label="SF6Viewer 대전 오버레이">
+      <header><span class="brand">SF6VIEWER</span><span id="overlay-status" class="state">연결 중</span></header>
+      <section class="player"><p id="profile-name">플레이어 정보 대기 중</p><p id="profile-meta">—</p></section>
+      <section class="match"><p id="match-result">최근 대전 없음</p><p id="match-meta">수집 후 자동으로 표시됩니다.</p></section>
+      <footer id="job-status">작업 상태 대기 중</footer>
+    </main>
+  </body>
+</html>

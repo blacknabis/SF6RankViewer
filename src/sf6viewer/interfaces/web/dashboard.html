@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>SF6Viewer</title>
+    <link rel="stylesheet" href="/ui/dashboard.css">
+    <script src="/ui/dashboard.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">본문으로 건너뛰기</a>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">LOCAL DATA VIEWER</p>
+        <h1>SF6Viewer</h1>
+      </div>
+      <div class="connection" aria-live="polite">
+        <span id="connection-dot" class="status-dot" aria-hidden="true"></span>
+        <span id="connection-status">연결 확인 중</span>
+      </div>
+    </header>
+
+    <main id="content" tabindex="-1">
+      <section id="page-state" class="notice" aria-live="polite">
+        데이터를 안전하게 불러오는 중입니다.
+      </section>
+
+      <section class="summary-grid" aria-label="시스템 현황">
+        <article class="summary-card"><span>대전 기록</span><strong id="match-count">—</strong></article>
+        <article class="summary-card"><span>프로필 스냅샷</span><strong id="profile-count">—</strong></article>
+        <article class="summary-card"><span>진행 중 작업</span><strong id="running-job-count">—</strong></article>
+        <article class="summary-card"><span>검토 대기</span><strong id="quarantine-count">—</strong></article>
+      </section>
+
+      <section class="content-grid" aria-label="최근 수집 결과">
+        <article class="panel">
+          <h2>내 프로필</h2>
+          <dl id="profile-detail" class="details"></dl>
+          <p id="profile-empty" class="empty-state">아직 프로필 스냅샷이 없습니다.</p>
+        </article>
+        <article class="panel">
+          <h2>최근 대전</h2>
+          <dl id="match-detail" class="details"></dl>
+          <p id="match-empty" class="empty-state">아직 수집된 대전 기록이 없습니다.</p>
+        </article>
+        <article class="panel">
+          <h2>최근 작업</h2>
+          <dl id="job-detail" class="details"></dl>
+          <p id="job-empty" class="empty-state">등록된 작업이 없습니다.</p>
+        </article>
+        <article class="panel">
+          <h2>격리 항목</h2>
+          <ul id="quarantine-list" class="compact-list" aria-live="polite"></ul>
+          <p id="quarantine-empty" class="empty-state">검토가 필요한 항목이 없습니다.</p>
+        </article>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="section-title">
+          <h2>최근 수집 실행</h2>
+          <span id="last-refresh" class="muted">갱신 대기 중</span>
+        </div>
+        <div class="table-wrap" tabindex="0">
+          <table>
+            <caption class="sr-only">최근 수집 실행 상태</caption>
+            <thead><tr><th scope="col">상태</th><th scope="col">원본</th><th scope="col">정규화</th><th scope="col">중복</th><th scope="col">격리</th></tr></thead>
+            <tbody id="ingestion-rows"></tbody>
+          </table>
+        </div>
+        <p id="ingestion-empty" class="empty-state">수집 실행 이력이 없습니다.</p>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: transparent; color: #f8fbff; font: 18px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.overlay { width: 520px; min-height: 210px; padding: 20px 24px; border-left: 5px solid #73e0bf; background: linear-gradient(90deg, rgba(9, 13, 22, .93), rgba(9, 13, 22, .72)); text-shadow: 0 1px 3px rgba(0, 0, 0, .9); }
+header { display: flex; justify-content: space-between; gap: 16px; color: #b9c5d7; font-size: .75rem; letter-spacing: .1em; }
+.brand { color: #73e0bf; font-weight: 800; } .state { text-align: right; }
+.player, .match { margin-top: 18px; } .player p, .match p, footer { margin: 0; }
+#profile-name { font-size: 1.45rem; font-weight: 750; } #match-result { color: #ffce79; font-size: 1.12rem; font-weight: 750; }
+#profile-meta, #match-meta, footer { color: #c1cad8; font-size: .88rem; }
+footer { margin-top: 18px; padding-top: 10px; border-top: 1px solid rgba(215, 228, 255, .22); }
+@media (max-width: 540px) { .overlay { width: 100vw; } }
