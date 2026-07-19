@@ -17,6 +17,7 @@ const COLLECTION_MESSAGES = Object.freeze({
   "SESSION.ACCOUNT_MISMATCH": "로그인 계정과 로컬 계정이 일치하지 않습니다.",
   "UPSTREAM.TIMEOUT": "Buckler 페이지 응답 시간이 초과되었습니다. 잠시 후 다시 시도하세요.",
   "UPSTREAM.UNAVAILABLE": "Buckler 프로필 페이지에 연결할 수 없습니다. 로그인 상태를 확인한 뒤 다시 시도하세요.",
+  "UPSTREAM.RATE_LIMITED": "Buckler가 수집 요청을 일시적으로 차단했습니다. 잠시 후 다시 시도하세요.",
   "UPSTREAM.CONTRACT_CHANGED": "Buckler 페이지 형식이 달라 원문을 안전하게 처리할 수 없습니다.",
   "DATA.IDENTITY_GROUP_INCOMPLETE": "프로필 정보가 아직 없어 대전 기록을 정확하게 판별할 수 없습니다.",
   "INTERNAL.UNEXPECTED": "수집을 완료할 수 없습니다. 잠시 후 다시 시도하세요."

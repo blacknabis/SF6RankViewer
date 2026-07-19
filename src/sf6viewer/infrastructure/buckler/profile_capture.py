@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 
-from playwright.sync_api import Browser, BrowserContext, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
 from sf6viewer.application.services.profile_collection import (
     CollectedRawProfile,
@@ -34,18 +34,24 @@ class BucklerProfileCapture:
         try:
             storage_state = _storage_state(session.storage_state)
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                browser = _launch_visible_system_browser(playwright)
                 context = browser.new_context(
                     storage_state=storage_state,
                     locale="ko-KR",
                     timezone_id="Asia/Seoul",
                 )
                 page = context.new_page()
-                page.goto(
+                response = page.goto(
                     _PROFILE_URL.format(user_code=session.user_code.value),
                     wait_until="domcontentloaded",
                     timeout=_PAGE_TIMEOUT_MS,
                 )
+                if response is None or response.status >= 500:
+                    raise error_from_code("UPSTREAM.UNAVAILABLE")
+                if response.status in {403, 429}:
+                    raise error_from_code("UPSTREAM.RATE_LIMITED")
+                if response.status >= 400:
+                    raise error_from_code("UPSTREAM.UNAVAILABLE")
                 next_data = page.locator("script#__NEXT_DATA__").text_content(
                     timeout=_PAGE_TIMEOUT_MS
                 )
@@ -70,6 +76,16 @@ class BucklerProfileCapture:
                     browser.close()
                 except Exception:
                     pass
+
+
+def _launch_visible_system_browser(playwright: Playwright) -> Browser:
+    """Use a normal installed browser; Buckler rejects the headless profile flow."""
+    for channel in ("chrome", "msedge"):
+        try:
+            return playwright.chromium.launch(headless=False, channel=channel)
+        except Exception:
+            continue
+    return playwright.chromium.launch(headless=False)
 
 
 def normalize_profile(payload: Mapping[str, JsonValue]) -> NormalizedProfile:
