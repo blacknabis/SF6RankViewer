@@ -489,10 +489,16 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         session: Annotated[Session, Depends(get_session)],
         page: PageNumber = 1,
         page_size: PageSize = 25,
+        status: Annotated[QuarantineStatus | None, Query()] = None,
     ) -> QuarantinePage:
         """List safe rejection metadata for review; raw values and field error JSON stay private."""
 
-        statement = select(QuarantineRecordModel).order_by(
+        statement = select(QuarantineRecordModel)
+        count_statement = select(func.count()).select_from(QuarantineRecordModel)
+        if status is not None:
+            statement = statement.where(QuarantineRecordModel.status == status)
+            count_statement = count_statement.where(QuarantineRecordModel.status == status)
+        statement = statement.order_by(
             QuarantineRecordModel.created_at_ms.desc(), QuarantineRecordModel.id.desc()
         )
         records = session.scalars(
@@ -501,7 +507,7 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         return QuarantinePage(
             items=tuple(_quarantine_response(record) for record in records),
             page=_page_metadata(
-                session.scalar(select(func.count()).select_from(QuarantineRecordModel)),
+                session.scalar(count_statement),
                 page,
                 page_size,
             ),

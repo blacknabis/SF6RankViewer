@@ -59,11 +59,13 @@ from sf6viewer.infrastructure.db.engine import (
     run_migrations,
 )
 from sf6viewer.infrastructure.db.models.accounts import AccountModel
+from sf6viewer.infrastructure.db.models.ingestion_runs import IngestionRunModel
 from sf6viewer.infrastructure.db.models.legacy_rows import LegacyRowModel
 from sf6viewer.infrastructure.db.models.match_observations import MatchObservationModel
 from sf6viewer.infrastructure.db.models.matches import MatchModel
 from sf6viewer.infrastructure.db.models.profile_snapshots import ProfileSnapshotModel
 from sf6viewer.infrastructure.db.models.quarantine_records import QuarantineRecordModel
+from sf6viewer.infrastructure.db.models.raw_records import RawRecordModel
 from sf6viewer.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
@@ -316,6 +318,36 @@ class NativeLoginBridge:
                 deleted_count = int(getattr(deleted, "rowcount", 0) or 0)
                 session.commit()
             return {"ok": True, "cleared": deleted_count}
+        except Exception:
+            session.rollback()
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        finally:
+            session.close()
+
+    def ignore_legacy_quarantines(self) -> dict[str, bool | int | str]:
+        """Hide only open migration quarantines while preserving their evidence."""
+        session = self._session_factory()
+        try:
+            with self._lock:
+                legacy_raw_ids = (
+                    select(RawRecordModel.id)
+                    .join(
+                        IngestionRunModel,
+                        IngestionRunModel.id == RawRecordModel.ingestion_id,
+                    )
+                    .where(IngestionRunModel.kind == "LEGACY_IMPORT")
+                )
+                ignored = session.execute(
+                    update(QuarantineRecordModel)
+                    .where(
+                        QuarantineRecordModel.status == "OPEN",
+                        QuarantineRecordModel.raw_record_id.in_(legacy_raw_ids),
+                    )
+                    .values(status="IGNORED", resolved_at_ms=_now_ms())
+                )
+                ignored_count = int(getattr(ignored, "rowcount", 0) or 0)
+                session.commit()
+            return {"ok": True, "ignored": ignored_count}
         except Exception:
             session.rollback()
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}

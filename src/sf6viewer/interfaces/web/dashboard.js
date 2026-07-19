@@ -24,6 +24,7 @@ const COLLECTION_MESSAGES = Object.freeze({
 let refreshInFlight = false;
 let loginInFlight = false;
 let resetInFlight = false;
+let legacyCleanupInFlight = false;
 let authProbeInFlight = false;
 let authProbeStarted = false;
 let savedSessionVerified = false;
@@ -71,6 +72,8 @@ function updateLoginAvailability() {
   submit.disabled = !available || loginInFlight;
   byId("matches-collect").disabled = !collectionAvailable || typeof bridge.collect_matches !== "function";
   byId("matches-reset").disabled = !available || resetInFlight || typeof bridge.clear_matches !== "function";
+  byId("legacy-quarantine-clear").disabled = !available || legacyCleanupInFlight
+    || typeof bridge.ignore_legacy_quarantines !== "function";
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
   }
@@ -229,6 +232,41 @@ async function clearMatches() {
   }
 }
 
+function setLegacyQuarantineStatus(message) {
+  byId("legacy-quarantine-status").textContent = message;
+}
+
+async function ignoreLegacyQuarantines() {
+  if (legacyCleanupInFlight) return;
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.ignore_legacy_quarantines !== "function") {
+    setLegacyQuarantineStatus("데스크톱 정리 연결을 준비 중입니다.");
+    return;
+  }
+  if (!window.confirm("이전 마이그레이션 검토 대기만 정리할까요? 원본 기록은 보존됩니다.")) return;
+
+  legacyCleanupInFlight = true;
+  updateLoginAvailability();
+  const button = byId("legacy-quarantine-clear");
+  button.setAttribute("aria-busy", "true");
+  setLegacyQuarantineStatus("이전 마이그레이션 검토 대기를 정리하고 있습니다.");
+  try {
+    const result = await bridge.ignore_legacy_quarantines();
+    if (result && result.ok === true && Number.isInteger(result.ignored)) {
+      setLegacyQuarantineStatus(`검토 대기 ${number(result.ignored)}건을 정리했습니다. 원본 기록은 유지됩니다.`);
+      await refresh();
+    } else {
+      setLegacyQuarantineStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+    }
+  } catch (_) {
+    setLegacyQuarantineStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
+  } finally {
+    legacyCleanupInFlight = false;
+    button.removeAttribute("aria-busy");
+    updateLoginAvailability();
+  }
+}
+
 function configureObsUrl() {
   const input = byId("obs-url");
   input.value = `${window.location.origin}/ui/obs.html`;
@@ -361,7 +399,7 @@ async function refresh() {
     const [health, system, profiles, matches, jobs, quarantines, ingestions] = await Promise.all([
       getJson("/api/v1/health"), getJson("/api/v1/system"), getJson("/api/v1/profile-snapshots?page_size=1"),
       getJson("/api/v1/matches/latest?page_size=1"), getJson("/api/v1/jobs?page_size=1"),
-      getJson("/api/v1/quarantine?page_size=5"), getJson("/api/v1/ingestion-runs?page_size=5")
+      getJson("/api/v1/quarantine?page_size=5&status=OPEN"), getJson("/api/v1/ingestion-runs?page_size=5")
     ]);
     if (health.status !== "ok" || system.status !== "ok") throw new Error("로컬 서비스 상태를 확인할 수 없습니다.");
     byId("match-count").textContent = number(system.match_count);
@@ -388,6 +426,7 @@ byId("login-form").addEventListener("submit", (event) => { void beginLogin(event
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
 byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
 byId("matches-reset").addEventListener("click", () => { void clearMatches(); });
+byId("legacy-quarantine-clear").addEventListener("click", () => { void ignoreLegacyQuarantines(); });
 configureObsUrl();
 window.addEventListener("pywebviewready", () => { void restoreSavedSession(); });
 window.setTimeout(() => { void restoreSavedSession(); }, 0);
