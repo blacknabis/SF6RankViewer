@@ -51,8 +51,8 @@ SF6Viewer v2는 기존 코드를 점진적으로 확장하지 않고 새 구조�
 v2 첫 안정 릴리스는 아래 조건을 모두 만족해야 한다.
 
 - 동일 v1 DB를 여러 번 이관해도 v2 행 수와 집계가 변하지 않는다.
-- `v1 원본 행 수 = 정규화 관측 + 중복 관측 + 격리 행`이 성립한다.
-- 기존 841건 기준 전체 결과는 433승·408패로 검증되고 날짜 범위와 필수 필드 checksum이 일치한다.
+- `v1 player 행 = 활성 계정 + provenance/격리 player`, `v1 match 행 = 정규화 관측 + 중복 관측 + 격리 match`가 각각 성립한다.
+- 현재 사용자 v1 snapshot의 release acceptance는 841건·433승·408패와 날짜 범위·필수 필드 checksum이 일치하는 것이다. runtime 이관기는 이 숫자를 상수로 사용하지 않고 각 source에서 계산한 count와 canonical multiset을 기준으로 검증한다.
 - 수집 요청 100개를 동시에 보내도 active Playwright 작업이 하나이고 중복 요청은 기존 job으로 합쳐진다.
 - selector/응답 계약 파손은 성공이 아니라 `CONTRACT_CHANGED`로 종료되고 새 정규화 데이터가 생기지 않는다.
 - 날짜를 해석하지 못한 레코드는 현재 시각으로 대체되지 않고 격리된다.
@@ -116,7 +116,7 @@ flowchart LR
 7. Uvicorn을 종료하고 worker/server thread를 join한다.
 8. runtime 파일을 지우고 mutex를 해제한다.
 
-프로세스 이름으로 모든 `python.exe` 또는 `chrome.exe`를 종료하는 동작은 금지한다.
+종료 요청 시점부터 하나의 monotonic 20초 absolute deadline을 사용한다. T+14초까지 cooperative 종료, T+19초까지 앱이 생성 시점부터 추적한 Playwright child PID 종료와 join, 마지막 1초 안에 marker와 가능한 cleanup을 끝낸다. deadline이 되면 현재 SF6Viewer 프로세스만 exit code 70으로 즉시 종료한다. 다음 시작은 non-terminal job과 raw 상태로 복구한다. 프로세스 이름으로 모든 `python.exe` 또는 `chrome.exe`를 종료하는 동작은 금지한다.
 
 ## 6. 저장 위치와 보안 경계
 
@@ -125,7 +125,7 @@ flowchart LR
 ├─ data\sf6viewer-v2.db
 ├─ auth\buckler.dpapi
 ├─ backgrounds\<sha256>.<ext>
-├─ legacy\backups\<source-sha256>.db
+├─ legacy\backups\<source-logical-sha256>.db
 ├─ logs\sf6viewer-YYYYMMDD.jsonl
 ├─ crash\
 └─ runtime\instance.json
@@ -141,6 +141,8 @@ flowchart LR
 - OBS endpoint는 인증 정보·설정·진단을 제외한 읽기 전용 broadcast projection만 제공하며 변경 API 권한을 갖지 않는다.
 - 전체 DB 삭제 REST endpoint는 제거한다. 초기화는 백업 생성과 네이티브 확인을 거치는 maintenance 흐름만 허용한다.
 
+macOS 소스 실행은 동일한 `AuthStore` port에 Keychain adapter를 연결하고 `~/Library/Application Support/SF6Viewer`를 사용한다. macOS binary·installer와 Windows 전용 single-instance 동등 구현은 v2.0 배포 범위 밖이지만, domain/application이 DPAPI나 Windows path를 직접 참조하지 않게 해 소스 실행 경계를 유지한다.
+
 ## 7. 데이터 신뢰 모델
 
 ### 7.1 처리 파이프라인
@@ -153,7 +155,8 @@ flowchart LR
     V -->|"불완전/애매"| Q["quarantine"]
     N --> U{"identity unique"}
     U -->|"신규"| M["matches + observation"]
-    U -->|"기존"| O["observation만 추가"]
+    U -->|"기존 + content hash 동일"| O["observation만 추가"]
+    U -->|"기존 + content hash 다름"| Q
     M --> X["commit 후 data.changed"]
     O --> X
     Q --> X
@@ -169,9 +172,11 @@ flowchart LR
 
 1. Buckler 원본 match ID
 2. 원본 링크 또는 hydration key
-3. 계정, 원본 시각 문자열, 양측 이름·캐릭터·rating, 결과, 같은 원본 페이지에서의 occurrence index를 canonical JSON으로 만든 SHA-256
+3. 계정, 원본 시각 문자열, 양측 이름·캐릭터, 결과처럼 안정적인 필드로 만든 base SHA-256과 완전한 동일 그룹 안에서 오래된 순서부터 매긴 occurrence ordinal
 
-DB가 `UNIQUE(account_id, identity_key)`를 보장한다. 충돌은 기존 match를 수정하지 않고 새 observation을 연결한다.
+fallback ordinal은 페이지 절대 위치가 아니다. 수집기는 같은 base fingerprint 그룹의 오래된 경계를 확인할 때까지 추가 행을 읽고, 경계를 확인하지 못한 그룹은 추측하지 않고 격리한다. 새 rematch가 최신 쪽에 추가돼도 기존 ordinal이 바뀌지 않아야 한다.
+
+DB가 `UNIQUE(account_id, identity_key)`를 보장한다. 충돌 시 기존 match와 새 normalized content SHA-256이 같을 때만 duplicate observation으로 연결한다. 내용이 다르면 `DATA.IDENTITY_COLLISION`로 격리하며 기존 match에 잘못 귀속하지 않는다.
 
 ### 7.3 필수 불변식
 
@@ -192,17 +197,17 @@ DB가 `UNIQUE(account_id, identity_key)`를 보장한다. 충돌은 기존 match
 
 원본 `sf6viewer.db`, `auth.json`, `user_config.json`, 배경 이미지는 삭제하거나 덮어쓰지 않는다.
 
-1. 후보 DB를 `mode=ro`로 열어 v1 schema를 검증한다.
-2. SQLite backup API로 AppData에 backup을 만들고 원본과 backup SHA-256을 비교한다.
-3. 원본 hash를 `legacy_sources`에 등록한다. 완료된 같은 hash가 있으면 no-op으로 종료한다.
+1. 후보 DB를 `mode=ro`로 열어 v1 schema를 검증한다. `immutable=1`은 사용하지 않아 WAL과 동시 변경을 정상 처리한다.
+2. source `data_version`과 file stat을 기록하고 SQLite backup API로 committed WAL을 포함한 일관된 snapshot을 만든다. 전후 source 변경이 감지되면 임시 backup을 버리고 최대 3회 재시도한다.
+3. backup snapshot에서 table별 manifest와 canonical logical SHA-256을 계산해 `legacy_sources`에 등록한다. 물리적인 main DB hash를 backup hash와 비교하지 않는다. 완료된 같은 logical hash가 있으면 no-op으로 종료한다.
 4. 임시 v2 DB에 모든 v1 player/match 행을 `legacy_rows.raw_payload`로 먼저 기록한다.
 5. `user_config.json`의 user code를 우선해 단일 활성 계정을 정한다. 없으면 가장 최근 player를 사용한다.
 6. 활성 계정의 정상 행을 변환하고, 중복은 observation으로, 해석 불가 또는 다른 계정 행은 quarantine으로 보존한다.
-7. 행 수 보존, 433승·408패, 날짜 범위, 외래키, `PRAGMA integrity_check`, 필수 필드 checksum을 검증한다.
+7. source에서 동적으로 계산한 table별 행 수, canonical multiset, 날짜·결과·null 분포, 외래키, `PRAGMA integrity_check`, 필수 필드 checksum을 검증한다. 현재 사용자 snapshot과 CI golden에 대해서만 841건·433승·408패를 추가 acceptance로 확인한다.
 8. 검증 성공 후 임시 DB를 fsync하고 v2 active DB로 atomic rename한다.
 9. 하나라도 실패하면 active DB를 바꾸지 않고 backup과 실패 보고서를 유지한다.
 
-v1의 평문 인증 파일은 자동으로 v2 인증으로 활성화하지 않는다. 파일은 원본 위치와 backup에 보존하되 사용자는 첫 v2 실행에서 다시 로그인한다. 이는 오래된 세션과 계정 불일치를 새 저장소에 주입하지 않기 위한 보안 결정이다.
+v1의 평문 인증 파일은 읽거나 backup에 복사하거나 v2 인증으로 활성화하지 않는다. 원본 위치의 파일을 변경하지 않고 사용자는 첫 v2 실행에서 다시 로그인한다. 이는 오래된 세션과 계정 불일치를 새 저장소에 주입하지 않기 위한 보안 결정이다.
 
 ## 9. 작업과 수집 상태
 
@@ -262,7 +267,7 @@ API prefix는 `/api/v2`다. 성공 응답은 명시적 Pydantic schema, 실패 �
 
 ### 11.2 첫 실행
 
-기존 사용자는 마이그레이션 검증 결과를 먼저 본다. 성공 문구는 `기존 경기 841건을 확인했고 안전 백업을 만들었습니다`이며 backup 경로와 기술 세부 정보는 펼침 영역에 둔다. 인증은 다시 로그인한다.
+기존 사용자는 마이그레이션 검증 결과를 먼저 본다. 성공 문구는 report의 실제 값을 사용한 `기존 경기 {imported_match_count}건을 확인했고 안전 백업을 만들었습니다`이며, 현재 사용자 snapshot에서는 841건으로 표시된다. backup 경로와 기술 세부 정보는 펼침 영역에 둔다. 인증은 다시 로그인한다.
 
 신규 사용자는 시작 안내 → Capcom 로그인 → 선수 확인 → 첫 수집 → 방송 설정의 다섯 단계를 거친다. 중단 후 재개하면 마지막 완료 단계부터 이어진다.
 
@@ -352,7 +357,7 @@ React shell, onboarding, 홈, 경기 기록, 분석, 활동 drawer, 설정, 접�
 
 ### 단계 4: 패키징과 릴리스
 
-WebView2 prerequisite, pinned Chromium, PyInstaller build, Inno Setup installer, clean Windows VM smoke test, upgrade/rollback, 로그·진단 bundle, 문서를 완성한다. 저장소에 대형 EXE/ZIP을 commit하지 않고 release artifact로 배포한다.
+WebView2 prerequisite, pinned Chromium, PyInstaller build, Inno Setup installer, clean Windows VM smoke test, upgrade/rollback, 로그·진단 bundle, 문서를 완성한다. 같은 단계에서 macOS AppPaths와 Keychain AuthStore adapter를 연결하고 clean macOS runner에서 `python -m sf6viewer` source smoke를 수행한다. macOS binary는 만들지 않는다. 저장소에 대형 EXE/ZIP을 commit하지 않고 release artifact로 배포한다.
 
 각 단계는 이전 단계의 자동화 검증을 모두 통과해야 다음 단계로 넘어간다. 단계 1의 상세 구현 계약은 별도 Foundation 설계 문서에 고정한다.
 
@@ -361,12 +366,12 @@ WebView2 prerequisite, pinned Chromium, PyInstaller build, Inno Setup installer,
 | 위험 | 완화 |
 |---|---|
 | Buckler DOM/JSON 변경 | 계약 검증, raw 보존, quarantine, parser fixture, 성공과 0건 분리 |
-| rematch 오인 중복 | source ID 우선 identity, occurrence index fallback, DB unique + observation |
+| rematch 오인 중복 | source ID 우선 identity, 완전한 동일 그룹의 안정 ordinal, content hash 충돌 검증 |
 | 자동·수동 수집 중첩 | 서버 소유 single-flight coordinator와 bounded queue |
 | 강제 종료 중 부분 저장 | 네트워크와 transaction 분리, raw 선행 commit, startup recovery |
 | v1 데이터 손실 | read-only 원본, hash backup, 임시 DB, 수량·checksum 검증 후 atomic 활성화 |
 | 계정 혼합 | 단일 account 불변식, 수집 계정 mismatch 즉시 중단 |
-| 로컬 API 오용 | loopback, host 제한, session+CSRF, broadcast read-only token |
+| 로컬 API 오용 | loopback, host 제한, session+CSRF, 민감값 없는 broadcast read-only projection |
 | OBS 장면 깨짐 | 고정 포트, 기존 URL별 canvas 계약 유지, screenshot regression |
 | 배포 환경 drift | Python/frontend lockfile, clean VM build·smoke test, 번들 자산 |
 

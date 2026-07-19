@@ -123,8 +123,8 @@ production root는 `%LOCALAPPDATA%\SF6Viewer`다. unit/integration test는 app f
 data\sf6viewer-v2.db
 auth\buckler.dpapi
 backgrounds\<sha256>.<ext>
-legacy\backups\<source-sha256>.db
-legacy\reports\<source-sha256>.json
+legacy\backups\<source-logical-sha256>.db
+legacy\reports\<source-logical-sha256>.json
 logs\sf6viewer-YYYYMMDD.jsonl
 crash\
 runtime\instance.json
@@ -220,7 +220,7 @@ terminal ingestion state는 `COMPLETED`, `COMPLETED_WITH_WARNINGS`, `FAILED`, `I
 | `disposition` | TEXT | `PENDING`, `NORMALIZED`, `DUPLICATE`, `QUARANTINED` |
 | `disposed_at_ms` | INTEGER | nullable |
 
-`UNIQUE(ingestion_id, ordinal)`와 `CHECK((disposition='PENDING' AND disposed_at_ms IS NULL) OR (disposition!='PENDING' AND disposed_at_ms IS NOT NULL))`를 둔다. raw payload는 update하지 않고 disposition만 한 번 바꿀 수 있다. repository와 DB trigger가 두 번째 disposition 변경을 거부한다.
+`UNIQUE(ingestion_id, ordinal)`와 `CHECK((disposition='PENDING' AND disposed_at_ms IS NULL) OR (disposition!='PENDING' AND disposed_at_ms IS NOT NULL))`를 둔다. raw row는 삭제하지 않고, payload는 update하지 않으며, disposition만 한 번 바꿀 수 있다. repository와 DB trigger가 delete와 두 번째 disposition 변경을 거부한다.
 
 ### 6.6 `profile_snapshots`
 
@@ -244,7 +244,8 @@ terminal ingestion state는 `COMPLETED`, `COMPLETED_WITH_WARNINGS`, `FAILED`, `I
 | `id` | TEXT | ULID PK |
 | `account_id` | INTEGER | NOT NULL FK accounts, CHECK 1 |
 | `identity_key` | TEXT | NOT NULL |
-| `identity_kind` | TEXT | `SOURCE_ID`, `HYDRATION_KEY`, `FALLBACK_V1` |
+| `identity_kind` | TEXT | `SOURCE_ID`, `HYDRATION_KEY`, `FALLBACK_GROUP` |
+| `content_sha256` | TEXT | NOT NULL, 전체 normalized match fact의 canonical hash |
 | `occurred_at_ms` | INTEGER | NOT NULL |
 | `occurred_at_source` | TEXT | NOT NULL 원본 문자열 |
 | `my_character` | TEXT | NOT NULL |
@@ -267,6 +268,7 @@ terminal ingestion state는 `COMPLETED`, `COMPLETED_WITH_WARNINGS`, `FAILED`, `I
 | `match_id` | TEXT | NOT NULL FK matches |
 | `raw_record_id` | TEXT | NOT NULL FK raw_records, UNIQUE |
 | `ingestion_id` | TEXT | NOT NULL FK ingestion_runs |
+| `observed_content_sha256` | TEXT | NOT NULL |
 | `observed_at_ms` | INTEGER | NOT NULL |
 
 하나의 match가 여러 live 수집 또는 legacy 행에서 관측돼도 원본 multiplicity를 잃지 않는다.
@@ -290,7 +292,7 @@ terminal ingestion state는 `COMPLETED`, `COMPLETED_WITH_WARNINGS`, `FAILED`, `I
 `legacy_sources`:
 
 - `id` ULID PK
-- `source_sha256` UNIQUE NOT NULL
+- `source_logical_sha256` UNIQUE NOT NULL; schema와 canonical row multiset의 digest
 - `source_schema_signature` NOT NULL
 - `source_path_hint`에는 basename만 저장하고 전체 로컬 경로는 저장하지 않음
 - `backup_relpath` NOT NULL
@@ -308,13 +310,24 @@ terminal ingestion state는 `COMPLETED`, `COMPLETED_WITH_WARNINGS`, `FAILED`, `I
 - `ordinal` INTEGER
 - `raw_payload` BLOB canonical JSON zlib
 - `canonical_sha256` TEXT
-- `disposition`: `ACTIVE_ACCOUNT`, `NORMALIZED`, `DUPLICATE`, `QUARANTINED`, `PROVENANCE_ONLY`
+- `disposition`: 최초 `PENDING`, 이후 `ACTIVE_ACCOUNT`, `NORMALIZED`, `DUPLICATE`, `QUARANTINED`, `PROVENANCE_ONLY` 중 하나
 - `raw_record_id` nullable FK raw_records
 - `match_id` nullable FK matches
 - `quarantine_id` nullable FK quarantine_records
 - `UNIQUE(source_id, table_name, legacy_pk, ordinal)`
 
-### 6.11 `settings`
+`legacy_rows`의 payload, source identity, canonical hash는 insert 뒤 immutable이다. disposition과 세 결과 FK는 한 transaction에서 `PENDING`으로부터 정확히 한 번만 전이할 수 있다. 따라서 변환 전 원본 보존과 DB-level immutability를 동시에 만족한다.
+
+### 6.11 `recovery_links`
+
+- `job_id` TEXT PK, FK jobs; job type은 `REPROCESS`
+- `ingestion_id` TEXT NOT NULL FK ingestion_runs
+- `attempted_at_ms` INTEGER NOT NULL
+- `UNIQUE(job_id, ingestion_id)`
+
+`ingestion_runs.job_id`는 최초 작업을 계속 가리킨다. startup recovery는 기존 ingestion을 새 ingestion으로 복제하지 않고, 새 `REPROCESS` job과 이 table로 연결한다. 하나의 ingestion은 여러 번의 recovery 시도를 가질 수 있다.
+
+### 6.12 `settings`
 
 singleton `id=1`:
 
@@ -345,7 +358,9 @@ PRAGMA temp_store = MEMORY;
 - 모든 repository write는 명시적 transaction context 안에서만 가능
 - commit 후에만 domain event를 event hub에 publish
 - 시작 시 `PRAGMA quick_check`와 `foreign_key_check` 실패하면 readiness 503, write 금지
-- DB trigger가 `raw_records`의 payload/identity field 변경, terminal raw disposition 재변경, `matches`와 `legacy_rows`의 update/delete를 `RAISE(ABORT)`로 차단
+- DB trigger가 `raw_records`의 delete, payload/identity field 변경, terminal raw disposition 재변경과 `matches`, `profile_snapshots`, `match_observations`의 update/delete를 `RAISE(ABORT)`로 차단
+- `legacy_rows` trigger는 payload/source/hash 변경과 delete를 막고, 오직 `PENDING`에서 terminal disposition으로 한 번 전이하면서 해당 결과 FK를 설정하는 update만 허용
+- `quarantine_records` trigger는 raw/reason/field error를 immutable하게 하고 `OPEN`에서 `RESOLVED` 또는 `IGNORED`로 한 번 전이하는 resolution field update만 허용
 
 ## 8. Error 계약
 
@@ -362,10 +377,13 @@ domain/application 오류는 아래 안정적인 code 중 하나다. 예상하�
 | `UPSTREAM.UNAVAILABLE` | 503 | true | 최대 2회 retry | 재시도 |
 | `UPSTREAM.RATE_LIMITED` | 429 | true | pause 5분 | 나중에 재시도 |
 | `UPSTREAM.CONTRACT_CHANGED` | 502 | false | pause | 진단 복사·업데이트 |
+| `DATA.IDENTITY_GROUP_INCOMPLETE` | 409 | true | 계속하되 warning | 더 큰 수집 범위로 재처리 |
+| `DATA.IDENTITY_COLLISION` | 409 | false | 계속하되 warning | 격리 기록 확인 |
 | `STORAGE.LOCKED` | 503 | true | pause | 앱 재시작 |
 | `STORAGE.FULL` | 507 | false | pause | 공간 확보 |
 | `STORAGE.CORRUPT` | 500 | false | pause/write 차단 | 복구 안내 |
 | `MIGRATION.UNSUPPORTED_SCHEMA` | 422 | false | 해당 없음 | 원본 유지·보고 |
+| `MIGRATION.SOURCE_BUSY` | 409 | true | 해당 없음 | v1 앱 종료 후 재시도 |
 | `MIGRATION.BACKUP_FAILED` | 500 | true | 해당 없음 | 권한/공간 확인 |
 | `MIGRATION.INVARIANT_FAILED` | 409 | false | 해당 없음 | 이관 중단·보고 |
 | `JOB.CONFLICT` | 409 | true | 해당 없음 | 현재 작업 완료 대기 |
@@ -410,6 +428,18 @@ bind 실패 시 300ms timeout으로 `GET /api/v2/system/identity`를 조회한�
 - 다른 서비스면 프로세스 조회가 가능한 경우 PID와 process name만 보여주고 `재시도`, `종료` 제공
 - 포트 변경, 상대 프로세스 kill, LAN bind는 금지
 
+### 9.3 bounded shutdown
+
+종료 요청 시점에 `deadline = monotonic() + 20초`를 한 번 계산하며 모든 wait/join/lock은 남은 시간만 사용한다.
+
+1. 즉시 `SHUTTING_DOWN`으로 바꾸고 새 job/write를 거부한다. scheduler를 멈추고 active job cancel flag와 Uvicorn `should_exit`를 동시에 설정한다.
+2. T+14초까지 worker와 server thread를 함께 join하며 cooperative Playwright·SSE·socket·DB cleanup을 수행한다.
+3. 앱은 Playwright 시작 직후 생성된 child PID와 creation time을 기록한다. T+14초에도 worker가 남으면 동일 PID와 creation time이 확인되는 owned child만 종료하고, worker/server join을 T+19초까지만 계속한다.
+4. T+19초부터 남은 1초 안에서 unclean marker를 atomic write한다. 별도 DB session이 즉시 write lock을 얻을 때만 active job을 `INTERRUPTED`로 표시하고, 얻지 못하면 non-terminal 상태를 그대로 둔다. server socket과 닫을 수 있는 DB handle도 남은 시간 안에서만 닫는다.
+5. 모든 thread가 끝났어도 정상 종료하고, 하나라도 남았으면 T+20초에 현재 SF6Viewer process만 exit code 70으로 즉시 종료한다.
+
+hard exit는 다른 이름의 Python/Chromium process를 건드리지 않는다. SQLite는 WAL과 transaction rollback으로 미완료 write를 복구하며, 다음 시작은 quick/integrity check 뒤 non-terminal job과 ingestion을 reconciliation한다. package smoke는 worker hang과 server-thread hang을 각각 주입해 기능 deadline 20초, CI scheduling 허용오차 1초를 포함한 관측 21초 이내에 종료하고 재시작 후 DB invariant를 만족하는지 검증한다.
+
 ## 10. 안전한 bootstrap과 API session
 
 앱 시작마다 `secrets.token_urlsafe(32)`로 bootstrap nonce를 만든다. pywebview는 `http://127.0.0.1:8000/?bootstrap=<nonce>`를 한 번 연다.
@@ -446,7 +476,17 @@ QUEUED → RUNNING → SUCCEEDED
                  └→ INTERRUPTED
 ```
 
-허용하지 않은 상태 전이는 domain error다. 시작 시 DB의 `QUEUED`와 `RUNNING`은 모두 `INTERRUPTED`로 바꾸고, `RAW_COMMITTED` 또는 `NORMALIZING` ingestion은 recovery job 하나로 재처리한다.
+허용하지 않은 상태 전이는 domain error다. 시작 시 하나의 reconciliation transaction이 다음 순서로 복구한다.
+
+1. `QUEUED`이면서 ingestion/recovery link가 없는 job과 `RUNNING`이지만 같은 claim transaction의 ingestion이 없는 job은 `INTERRUPTED`로 종료한다. `LOGIN`처럼 ingestion을 만들지 않는 non-terminal job도 동일하다.
+2. 각 ingestion에 대해 원본 job과 모든 `recovery_links` job을 하나의 attempt 집합으로 읽는다.
+3. ingestion이 terminal이면 집합 안의 모든 non-terminal job을 ingestion 결과와 동일한 terminal outcome으로 보정한다. 따라서 recovery가 ingestion commit 뒤 job commit 전에 crash해도 stale `RUNNING`이 남지 않는다.
+4. `FETCHING`이며 raw가 없는 ingestion은 `INTERRUPTED`로 바꾸고 모든 non-terminal attempt도 `INTERRUPTED`로 끝낸다.
+5. `RAW_COMMITTED` 또는 `NORMALIZING` ingestion은 모든 non-terminal attempt를 `INTERRUPTED`로 끝내되 ingestion은 recoverable 상태로 유지한다.
+6. 각 recoverable ingestion에 새 `REPROCESS` job과 `recovery_links`를 정확히 하나 만들고 coordinator의 첫 작업으로 넣는다. recovery는 기존 ingestion/raw를 사용하며 새 ingestion을 만들지 않는다.
+7. recovery 도중 다시 crash하면 같은 절차가 이전 recovery job을 `INTERRUPTED`로 만들고 다음 link를 하나 추가한다. 원본과 이전 recovery history는 변경하지 않는다.
+
+전체 reconciliation과 새 recovery enqueue는 하나의 write transaction과 single-instance write lock 안에서 실행한다. 이 연결과 상태를 API job detail 및 ingestion detail에서 함께 조회할 수 있어야 한다.
 
 ### 11.2 queue 규칙
 
@@ -510,21 +550,25 @@ FetchEnvelope<T>
 
 1. 원본 match ID가 있으면 `src:<id>`
 2. hydration/link key가 있으면 `hyd:<key>`
-3. v1/fallback은 다음 canonical JSON의 SHA-256: account user code, original date string, 양쪽 이름·캐릭터·MR·LP, result, 동일 source page 안의 occurrence index
+3. source key가 없으면 account user code, original date string, 양쪽 이름·캐릭터, result의 canonical JSON으로 `base_sha256`을 만든 뒤 완전한 동일 그룹의 1-based ordinal을 붙인다. 후속 관측에서 보강될 수 있는 MR/LP는 base identity에 포함하지 않는다.
 
-fallback은 `fb:<sha256>` 형식이다. 문자열은 Unicode NFC, 외곽 공백 제거, 숫자 JSON, 정렬된 key, UTF-8로 canonicalize한다.
+fallback은 `fb:<base_sha256>:<ordinal>` 형식이다. ordinal은 page 절대 index가 아니라 동일 base group에서 오래된 순서부터 센 값이다. live 목록은 최신부터 오므로 역순으로 센다. 최초 limit의 가장 오래된 timestamp에 fallback record가 있으면 그 timestamp보다 오래된 record 또는 upstream end를 볼 때까지 pagination을 확장한다. 확장은 총 200행까지이며, 그 안에서 timestamp 경계를 닫지 못하면 영향받는 group 전체를 `DATA.IDENTITY_GROUP_INCOMPLETE`로 격리한다. v1은 전체 table을 대상으로 `match_date ASC, legacy id ASC` 순서로 동일 group ordinal을 정한다. 새 rematch가 최신 쪽에 추가돼도 기존 ordinal은 변하지 않는다.
+
+문자열은 Unicode NFC, 외곽 공백 제거, 숫자 JSON, 정렬된 key, UTF-8로 canonicalize한다. 별도의 `content_sha256`은 occurred-at UTC와 원본 문자열, 양쪽 이름·캐릭터·MR·LP, result를 모두 포함한다. identity unique 충돌 시 content hash가 정확히 같은 경우에만 `DUPLICATE` observation을 추가한다. 다르면 raw를 `DATA.IDENTITY_COLLISION`로 격리하고 기존 match에 observation을 연결하지 않는다. 누락 optional rating이 이후 채워진 경우도 자동 병합하지 않는 보수적 정책이며, raw를 보존한 채 명시적 reprocess/resolution 대상으로 남긴다.
 
 ## 13. 수집 transaction 순서
 
 ```text
-1. browser fetch 완료 — DB transaction 없음
-2. job + ingestion RUNNING 짧은 commit
+1. coordinator가 QUEUED job을 claim하는 한 transaction에서 job RUNNING + ingestion FETCHING 생성
+2. browser fetch 완료 — DB transaction 없음
 3. 모든 raw_records를 한 transaction으로 insert, ingestion RAW_COMMITTED
 4. 각 raw를 순수 parser로 분류 — DB transaction 없음
 5. 한 normalization transaction:
-   account/profile snapshot upsert-or-insert
+   accounts 현재 projection만 validated upsert
+   profile_snapshots는 항상 INSERT-only
    matches INSERT ON CONFLICT DO NOTHING
-   match_observations insert
+   conflict가 있으면 content_sha256 비교
+   동일 hash만 match_observations insert, 다른 hash는 quarantine
    quarantine insert
    raw disposition 변경
    ingestion count와 terminal state 변경
@@ -533,7 +577,7 @@ fallback은 `fb:<sha256>` 형식이다. 문자열은 Unicode NFC, 외곽 공백 
 8. SSE collection.completed / data.changed 발행
 ```
 
-단계 3 이후 crash하면 다음 시작에서 pending raw를 새 recovery job으로 단계 4부터 실행한다. 단계 5 transaction이 실패하면 어떤 raw disposition도 부분 변경되지 않는다. 단계 7이 실패해도 ingestion 결과는 남고 startup reconciliation이 job을 결과에 맞춰 고친다.
+단계 1 commit 전 crash면 job은 `QUEUED`로 남고 reconciliation이 `INTERRUPTED` 처리한다. 단계 1 commit 후 fetch 전·중 crash면 `FETCHING` ingestion과 job을 `INTERRUPTED` 처리한다. 단계 3 이후 crash하면 pending raw를 기존 ingestion에 연결한 새 recovery job이 단계 4부터 처리한다. 단계 5 transaction이 실패하면 어떤 raw disposition도 부분 변경되지 않는다. 단계 7이 실패해도 ingestion 결과는 남고 startup reconciliation이 원본 또는 recovery job을 결과에 맞춰 고친다.
 
 완료된 ingestion은 `raw_count = normalized_count + duplicate_count + quarantine_count`여야 한다. DB query와 service assertion이 둘 다 검사한다.
 
@@ -542,19 +586,20 @@ fallback은 `fb:<sha256>` 형식이다. 문자열은 Unicode NFC, 외곽 공백 
 ### 14.1 탐색과 사전 검사
 
 - v1 EXE 디렉터리와 현재 작업 디렉터리의 `sf6viewer.db`만 자동 후보
-- SQLite URI `mode=ro&immutable=1`로 열고 쓰기 시도 금지
+- SQLite URI `mode=ro`와 정상 locking으로 열고 쓰기 시도 금지; WAL을 무시할 수 있는 `immutable=1`은 사용하지 않음
 - `PRAGMA quick_check`, 예상 table/column/type signature 검사
-- source 전체 SHA-256 계산
 - source가 현재 v2 active DB path이면 거부
-- 완료된 동일 source hash가 있으면 검증 report를 반환하고 no-op
+- source main DB와 `-wal`의 stat, read connection의 `PRAGMA data_version`을 snapshot 시도 전후에 비교
 
 ### 14.2 backup
 
-SQLite backup API로 `legacy/backups/<source-sha256>.db.tmp`에 복사한다. flush/fsync 후 backup SHA-256이 source와 같을 때만 `.db`로 atomic rename한다. 기존 같은 hash backup이 있으면 내용 hash를 검사한 뒤 재사용한다.
+SQLite backup API로 committed WAL을 포함한 일관된 snapshot을 임시 DB에 만든다. 전후 `data_version` 또는 main/WAL stat이 바뀌면 임시 DB를 버리고 500ms 간격으로 최대 3회 다시 시도한다. 세 번 모두 바뀌면 `MIGRATION.SOURCE_BUSY`로 원본을 그대로 두고 중단한다.
+
+source connection을 닫은 뒤 임시 backup에 `quick_check`를 실행하고, 해당 snapshot의 schema signature와 모든 player/match canonical multiset으로 `source_logical_sha256`을 계산한다. 별도로 backup 파일 bytes의 `backup_sha256`을 계산해 artifact 무결성에 사용한다. backup은 `legacy/backups/<source-logical-sha256>.db`로 fsync·atomic rename한다. 완료된 같은 logical hash가 있으면 기존 backup hash를 확인하고 report를 반환하는 no-op이다. main DB의 물리 hash를 backup hash와 비교하지 않는다.
 
 ### 14.3 staging DB
 
-active v2 DB가 있으면 SQLite backup API로 `sf6viewer-v2.next.db`를 만들고, 없으면 새 DB에 Alembic head를 적용한다. source import와 검증은 next DB에만 수행한다.
+active v2 DB가 있으면 SQLite backup API로 `sf6viewer-v2.next.db`를 만들고, 없으면 새 DB에 Alembic head를 적용한다. source import와 검증은 next DB에만 수행한다. 앱 상태가 `MIGRATING`인 동안 data/query/write endpoint는 503을 반환하고 migration status/event만 제공한다. 활성화 직전에 engine pool을 dispose하고 모든 connection 종료를 확인한 뒤 DB를 atomic replace하며, 새 engine으로 integrity check를 통과한 후에만 `READY`가 된다.
 
 모든 v1 `players`와 `matches` 행은 변환 전에 `legacy_rows.raw_payload`와 대응 `raw_records`로 보존한다. 활성 player는 `user_config.json`의 canonical user code와 일치하는 row를 우선하고, 없으면 `last_updated DESC, id DESC` 첫 row다. 그 외 player는 `PROVENANCE_ONLY`와 `LEGACY_NON_ACTIVE_ACCOUNT` quarantine으로 남긴다. v1 평문 인증은 읽거나 활성화하지 않는다.
 
@@ -569,7 +614,7 @@ v1 match mapping:
 | my/opponent character | 동일 필드, Unknown/빈 값은 quarantine |
 | my/opponent mr/lp | nullable integer, 0은 원본이 실제 0일 때만 유지 |
 | result | WIN/LOSE/DRAW만 정상화 |
-| v1 row identity | fallback canonical hash + occurrence index |
+| v1 row identity | 안정 필드 base hash + 전체 table 내 오래된 순서 group ordinal |
 
 ### 14.4 검증과 활성화
 
@@ -588,8 +633,10 @@ v1 matches count = normalized observations + duplicate observations + quarantine
 - `PRAGMA foreign_key_check` 0행
 - orphan raw, observation, quarantine 0행
 - 완료 ingestion count invariant 성립
-- golden manifest: players 2, matches 841, WIN 433, LOSE 408, null date 0, 날짜 min/max 일치
-- source와 backup SHA-256 동일, source의 이관 전후 SHA-256 동일
+- runtime에서는 source preflight가 계산한 players/matches/result/null/date 분포와 canonical multiset을 그대로 기대값으로 사용하며 2·841·433·408을 상수로 검사하지 않음
+- `v1_841.sqlite` CI fixture와 현재 사용자 snapshot dry-run에서만 golden manifest의 players 2, matches 841, WIN 433, LOSE 408, null date 0, 날짜 min/max를 추가 검사
+- source snapshot logical digest와 backup에서 다시 계산한 logical digest 동일, 기록한 `backup_sha256`과 backup bytes 동일
+- snapshot 시도 중 source 변경은 retry되며 앱은 source main/WAL에 write하지 않음
 
 모두 성공하면 next DB를 checkpoint, fsync, close한다. 기존 active DB가 있으면 timestamp/hash 이름으로 backup하고 같은 volume에서 atomic replace한다. 실패하면 next DB를 `legacy/reports` 밖의 임시 위치에서 제거하고 active/source/backup을 그대로 유지한다. 실패 report에는 count와 hash만 넣고 실제 선수명은 넣지 않는다.
 
@@ -710,15 +757,20 @@ Foundation event: `app.state`, `job.state`, `job.progress`, `collection.complete
 ### 18.2 Integration/contract 약 25%
 
 - 임시 SQLite의 repository/UoW, pragma, FK, unique race
+- job claim 전, claim commit 후, browser fetch 중 crash에서 stale QUEUED/RUNNING job 0건
 - raw commit 후 crash recovery
+- 원본 job INTERRUPTED + recovery_links + 동일 ingestion 재개, 반복 recovery에서 새 ingestion이 생기지 않음
+- recovery 도중 crash와 ingestion terminal commit 직후 crash에서 기존 recovery job이 정확히 terminalize되고 다음 recovery는 최대 하나
 - normalization rollback과 count invariant
+- 같은 identity/same content는 duplicate, 같은 identity/different content는 quarantine이며 observation 오귀속 0건
+- fallback group에 최신 rematch 추가·limit 이동 후 기존 ordinal 불변, 200행 안에 경계를 못 닫으면 group 전체 격리
 - account mismatch에서 기존 account/match 불변
 - 모든 REST success/problem schema
 - OpenAPI snapshot과 error catalog snapshot
 - nonce exchange, reuse 거부, CSRF, Host, docs 404, no CORS
 - SSE replay/reset/slow client
 - fixture HTTP server를 사용하는 Playwright adapter
-- v1 golden과 모든 fault injection
+- WAL에 committed row가 있는 v1, snapshot 중 concurrent writer, 841 golden과 모든 migration fault injection
 
 ### 18.3 Frontend 약 10%
 
@@ -741,6 +793,7 @@ Foundation event: `app.state`, `job.state`, `job.progress`, `collection.complete
 - golden 이관 841건 검증
 - 두 번째 EXE가 backend/collector를 추가로 시작하지 않음
 - 정상 종료 뒤 owned Uvicorn/Chromium child가 남지 않음
+- 영구 hang worker와 server thread 각각에서 기능 deadline 20초·관측 21초 안에 현재 앱만 hard-exit하고 다음 시작 integrity/recovery 통과
 - 임시 AppData를 사용하고 install directory에 DB가 생성되지 않음
 - bundle에 `.db`, auth, user config, env, debug dump, ZIP이 포함되지 않음
 - Windows Defender scan
@@ -787,7 +840,7 @@ secret-dependency-scan
 4. 실제 empty와 contract change fixture가 서로 다른 terminal 결과를 만든다.
 5. 날짜/결과/필수 필드 오류가 quarantine되며 fake 값이 생성되지 않는다.
 6. raw commit 직후 crash를 재현하고 재시작 후 정확히 한 번 정상화한다.
-7. 841 golden 이관이 count, multiset, FK, checksum을 통과한다.
+7. 841 golden과 841이 아닌 합성 v1 source가 각각 source-derived count, multiset, FK, checksum을 통과한다.
 8. 이관 fault injection 모든 단계에서 원본/backup/active DB가 보존된다.
 9. 동일 source 두 번째 이관이 no-op이다.
 10. API가 raw exception·로컬 경로·인증 정보를 노출하지 않는다.
