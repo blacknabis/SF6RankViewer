@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, URL, create_engine, event
+from sqlalchemy import URL, Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
@@ -63,14 +64,16 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 def run_migrations(database_path: Path, revision: str = "head") -> None:
     """Upgrade one explicit SQLite database without consulting ambient application paths."""
     resolved_database_path = _require_absolute_database_path(database_path)
-    project_root = Path(__file__).resolve().parents[4]
-    config = Config(str(project_root / "alembic.ini"))
+    migration_resource = files("sf6viewer.infrastructure.db").joinpath("migrations")
+    with as_file(migration_resource) as migration_path:
+        config = Config()
+        config.set_main_option("script_location", str(migration_path))
 
-    engine = _create_sqlite_engine(resolved_database_path)
-    try:
-        with engine.begin() as connection:
-            config.attributes["connection"] = connection
-            config.attributes["database_path"] = resolved_database_path
-            command.upgrade(config, revision)
-    finally:
-        engine.dispose()
+        engine = _create_sqlite_engine(resolved_database_path)
+        try:
+            with engine.begin() as connection:
+                config.attributes["connection"] = connection
+                config.attributes["database_path"] = resolved_database_path
+                command.upgrade(config, revision)
+        finally:
+            engine.dispose()
