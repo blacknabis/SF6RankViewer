@@ -18,6 +18,10 @@ from sf6viewer.application.services.raw_collection import (
 from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.domain.match import MatchFacts
 from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession
+from sf6viewer.infrastructure.buckler.browser_capture import (
+    launch_visible_system_browser,
+    require_collectable_response,
+)
 
 _BATTLELOG_URL = "https://www.streetfighter.com/6/buckler/ko-kr/profile/{user_code}/battlelog/rank"
 _PAGE_TIMEOUT_MS = 45_000
@@ -43,18 +47,19 @@ class BucklerBattlelogCapture:
         try:
             storage_state = _storage_state(session.storage_state)
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
+                browser = launch_visible_system_browser(playwright)
                 context = browser.new_context(
                     storage_state=storage_state,
                     locale="ko-KR",
                     timezone_id="Asia/Seoul",
                 )
                 page = context.new_page()
-                page.goto(
+                response = page.goto(
                     _BATTLELOG_URL.format(user_code=session.user_code.value),
                     wait_until="domcontentloaded",
                     timeout=_PAGE_TIMEOUT_MS,
                 )
+                require_collectable_response(response)
                 entries = page.locator("[class*='battle_data_battlelog__list'] > li").evaluate_all(
                     _ENTRY_EXTRACTION_SCRIPT
                 )
