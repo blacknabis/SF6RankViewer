@@ -51,7 +51,6 @@ function nativeLoginApi() {
 function updateLoginAvailability() {
   if (loginInFlight) return;
   const submit = byId("login-submit");
-  const wasDisabled = submit.disabled;
   const bridge = nativeLoginApi();
   const available = bridge !== null;
   submit.disabled = !available;
@@ -59,8 +58,6 @@ function updateLoginAvailability() {
   byId("matches-collect").disabled = !available || typeof bridge.collect_matches !== "function";
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
-  } else if (wasDisabled) {
-    setLoginStatus("내 계정의 10자리 사용자 코드를 입력한 뒤 로그인하세요.");
   }
 }
 
