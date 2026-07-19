@@ -13,8 +13,9 @@ from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from sf6viewer.infrastructure.db.models import (
     IngestionRunModel,
@@ -191,6 +192,36 @@ class SystemResponse(ApiModel):
     running_job_count: int = Field(ge=0)
 
 
+class ObsRecordSummary(ApiModel):
+    """Win/loss counts used by one streaming-overlay stat card."""
+
+    wins: int = Field(ge=0)
+    losses: int = Field(ge=0)
+
+
+class ObsOpponentSummary(ObsRecordSummary):
+    """Win/loss counts grouped by the latest opponent identity."""
+
+    label: str
+
+
+class ObsStatistics(ApiModel):
+    """V1-compatible aggregate groups for the compact streaming HUD."""
+
+    recent_limit: int = Field(ge=1, le=100)
+    total: ObsRecordSummary
+    recent: ObsRecordSummary
+    opponent_character: ObsOpponentSummary | None
+    opponent_player: ObsOpponentSummary | None
+
+
+class ObsMrPoint(ApiModel):
+    """One chronological MR observation for the overlay trend line."""
+
+    occurred_at_ms: int
+    mr: int = Field(ge=0)
+
+
 class ObsResponse(ApiModel):
     """Versioned, stable-shape overlay payload for OBS browser sources.
 
@@ -198,11 +229,13 @@ class ObsResponse(ApiModel):
     allowing an OBS template to bind once and survive first-run empty databases.
     """
 
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
     status: Literal["ok"] = "ok"
     profile: ProfileSnapshotResponse | None
     latest_match: MatchResponse | None
     latest_job: JobResponse | None
+    statistics: ObsStatistics
+    mr_history: tuple[ObsMrPoint, ...]
 
 
 def _page_metadata(total: int | None, page: int, page_size: int) -> PageMetadata:
@@ -285,6 +318,30 @@ def _quarantine_response(model: QuarantineRecordModel) -> QuarantineResponse:
     )
 
 
+def _record_summary(
+    session: Session, *criteria: ColumnElement[bool]
+) -> ObsRecordSummary:
+    """Aggregate only decisive results, matching the V1 W/L win-rate semantics."""
+
+    statement = select(
+        func.sum(case((MatchModel.result == "WIN", 1), else_=0)),
+        func.sum(case((MatchModel.result == "LOSE", 1), else_=0)),
+    ).select_from(MatchModel)
+    if criteria:
+        statement = statement.where(*criteria)
+    wins, losses = session.execute(statement).one()
+    return ObsRecordSummary(wins=int(wins or 0), losses=int(losses or 0))
+
+
+def _record_summary_from_matches(matches: list[MatchModel]) -> ObsRecordSummary:
+    """Aggregate one already-bounded recent match window in memory."""
+
+    return ObsRecordSummary(
+        wins=sum(match.result == "WIN" for match in matches),
+        losses=sum(match.result == "LOSE" for match in matches),
+    )
+
+
 def create_read_api(session_factory: SessionFactory) -> FastAPI:
     """Create the v2 local read API.
 
@@ -351,7 +408,9 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
     ) -> MatchPage:
         """List canonical matches, newest first, with deterministic tie-breaking."""
 
-        statement = select(MatchModel).order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+        statement = select(MatchModel).order_by(
+            MatchModel.occurred_at_ms.desc(), MatchModel.id.desc()
+        )
         records = session.scalars(
             statement.limit(page_size).offset((page - 1) * page_size)
         ).all()
@@ -379,7 +438,9 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         return ProfileSnapshotPage(
             items=tuple(_profile_response(record) for record in records),
             page=_page_metadata(
-                session.scalar(select(func.count()).select_from(ProfileSnapshotModel)), page, page_size
+                session.scalar(select(func.count()).select_from(ProfileSnapshotModel)),
+                page,
+                page_size,
             ),
         )
 
@@ -448,23 +509,69 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
 
     @app.get("/api/v1/obs", response_model=ObsResponse)
     def obs_overlay(session: Annotated[Session, Depends(get_session)]) -> ObsResponse:
-        """Return a stable-shape, overlay-safe snapshot for a local OBS browser source."""
+        """Return V1-style broadcast statistics without exposing private source data."""
 
         latest_profile = session.scalar(
             select(ProfileSnapshotModel).order_by(
                 ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc()
             ).limit(1)
         )
-        latest_match = session.scalar(
-            select(MatchModel).order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc()).limit(1)
+        recent_limit = 100
+        recent_matches = list(
+            session.scalars(
+                select(MatchModel)
+                .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+                .limit(recent_limit)
+            ).all()
         )
+        latest_match = recent_matches[0] if recent_matches else None
         latest_job = session.scalar(
             select(JobModel).order_by(JobModel.requested_at_ms.desc(), JobModel.id.desc()).limit(1)
+        )
+
+        opponent_character: ObsOpponentSummary | None = None
+        opponent_player: ObsOpponentSummary | None = None
+        if latest_match is not None:
+            character_record = _record_summary(
+                session, MatchModel.opponent_character == latest_match.opponent_character
+            )
+            opponent_character = ObsOpponentSummary(
+                label=latest_match.opponent_character,
+                wins=character_record.wins,
+                losses=character_record.losses,
+            )
+            player_record = _record_summary(
+                session, MatchModel.opponent_name == latest_match.opponent_name
+            )
+            opponent_player = ObsOpponentSummary(
+                label=latest_match.opponent_name,
+                wins=player_record.wins,
+                losses=player_record.losses,
+            )
+
+        mr_matches = list(
+            session.scalars(
+                select(MatchModel)
+                .where(MatchModel.my_mr.is_not(None))
+                .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+                .limit(recent_limit)
+            ).all()
         )
         return ObsResponse(
             profile=_profile_response(latest_profile) if latest_profile is not None else None,
             latest_match=_match_response(latest_match) if latest_match is not None else None,
             latest_job=_job_response(latest_job) if latest_job is not None else None,
+            statistics=ObsStatistics(
+                recent_limit=recent_limit,
+                total=_record_summary(session),
+                recent=_record_summary_from_matches(recent_matches),
+                opponent_character=opponent_character,
+                opponent_player=opponent_player,
+            ),
+            mr_history=tuple(
+                ObsMrPoint(occurred_at_ms=match.occurred_at_ms, mr=cast(int, match.my_mr))
+                for match in reversed(mr_matches)
+            ),
         )
 
     return app

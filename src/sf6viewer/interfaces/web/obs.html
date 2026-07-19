@@ -3,16 +3,67 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SF6Viewer OBS Overlay</title>
+    <meta name="color-scheme" content="dark">
+    <title>SF6Viewer Match Statistics</title>
     <link rel="stylesheet" href="/ui/obs.css">
     <script src="/ui/obs.js" defer></script>
   </head>
   <body>
-    <main class="overlay" aria-live="polite" aria-label="SF6Viewer 대전 오버레이">
-      <header><span class="brand">SF6VIEWER</span><span id="overlay-status" class="state">연결 중</span></header>
-      <section class="player"><p id="profile-name">플레이어 정보 대기 중</p><p id="profile-meta">—</p></section>
-      <section class="match"><p id="match-result">최근 대전 없음</p><p id="match-meta">수집 후 자동으로 표시됩니다.</p></section>
-      <footer id="job-status">작업 상태 대기 중</footer>
+    <main class="stats-overlay" aria-live="polite" aria-label="SF6Viewer 대전 통계">
+      <section class="stats-row">
+        <article class="stat-card stat-card-total">
+          <h2>TOTAL</h2>
+          <strong id="total-win-rate">0%</strong>
+          <p id="total-record">0W 0L</p>
+          <div class="progress-track"><span id="total-progress"></span></div>
+        </article>
+
+        <article class="stat-card stat-card-recent">
+          <h2 id="recent-title">RECENT 100</h2>
+          <strong id="recent-win-rate">0%</strong>
+          <p id="recent-record">0W 0L</p>
+          <div class="progress-track"><span id="recent-progress"></span></div>
+        </article>
+
+        <article class="stat-card stat-card-character">
+          <h2 id="character-title">VS CHAR</h2>
+          <strong id="character-win-rate">—</strong>
+          <p id="character-record">—</p>
+          <div class="progress-track"><span id="character-progress"></span></div>
+        </article>
+
+        <article class="stat-card stat-card-player">
+          <h2 id="player-title">VS PLAYER</h2>
+          <strong id="player-win-rate">—</strong>
+          <p id="player-record">—</p>
+          <div class="progress-track"><span id="player-progress"></span></div>
+        </article>
+
+        <article class="mr-chart" aria-label="최근 MR 변화">
+          <svg viewBox="0 0 440 160" preserveAspectRatio="none" role="img" aria-labelledby="mr-chart-title">
+            <title id="mr-chart-title">최근 MR 변화 그래프</title>
+            <defs>
+              <linearGradient id="mr-fill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#00ffff" stop-opacity=".62"></stop>
+                <stop offset="1" stop-color="#00ffff" stop-opacity="0"></stop>
+              </linearGradient>
+            </defs>
+            <g class="chart-grid" aria-hidden="true">
+              <line x1="4" y1="12" x2="382" y2="12"></line>
+              <line x1="4" y1="80" x2="382" y2="80"></line>
+              <line x1="4" y1="148" x2="382" y2="148"></line>
+            </g>
+            <path id="mr-area" d=""></path>
+            <polyline id="mr-line" points=""></polyline>
+            <g class="chart-labels" aria-hidden="true">
+              <text id="mr-max" x="432" y="17">—</text>
+              <text id="mr-mid" x="432" y="85">—</text>
+              <text id="mr-min" x="432" y="153">—</text>
+            </g>
+          </svg>
+        </article>
+      </section>
+      <p id="overlay-status" class="visually-hidden">연결 중</p>
     </main>
   </body>
 </html>
