@@ -302,8 +302,8 @@ def upgrade() -> None:
     op.create_table(
         "settings",
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("auto_collect_enabled", sa.Boolean(), nullable=False, server_default="1"),
-        sa.Column("collection_interval_seconds", sa.Integer(), nullable=False, server_default="60"),
+        sa.Column("auto_collect_enabled", sa.Boolean(), nullable=False, server_default="0"),
+        sa.Column("collection_interval_seconds", sa.Integer(), nullable=False, server_default="30"),
         sa.Column("collection_limit", sa.Integer(), nullable=False, server_default="20"),
         sa.Column("last_window_json", sa.Text(), nullable=True),
         sa.Column("onboarding_step", sa.Text(), nullable=True),

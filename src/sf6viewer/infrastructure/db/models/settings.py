@@ -31,10 +31,10 @@ class SettingsModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     auto_collect_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("1")
+        Boolean, nullable=False, server_default=text("0")
     )
     collection_interval_seconds: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("60")
+        Integer, nullable=False, server_default=text("30")
     )
     collection_limit: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("20")

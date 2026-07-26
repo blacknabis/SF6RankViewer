@@ -25,6 +25,9 @@ let refreshInFlight = false;
 let loginInFlight = false;
 let resetInFlight = false;
 let legacyCleanupInFlight = false;
+let autoCollectionInFlight = false;
+let autoCollectionStatusInFlight = false;
+let autoCollectionEnabled = null;
 let authProbeInFlight = false;
 let authProbeStarted = false;
 let savedSessionVerified = false;
@@ -74,6 +77,7 @@ function updateLoginAvailability() {
   byId("matches-reset").disabled = !available || resetInFlight || typeof bridge.clear_matches !== "function";
   byId("legacy-quarantine-clear").disabled = !available || legacyCleanupInFlight
     || typeof bridge.ignore_legacy_quarantines !== "function";
+  updateAutoCollectionAvailability(bridge, collectionAvailable);
   if (!available) {
     setLoginStatus("데스크톱 로그인 연결을 준비 중입니다.");
   }
@@ -159,6 +163,101 @@ function safeCollectionMessage(code) {
   return COLLECTION_MESSAGES[code] || COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"];
 }
 
+function setAutoCollectionStatus(message) {
+  byId("auto-collection-status").textContent = message;
+}
+
+function updateAutoCollectionAvailability(bridge, collectionAvailable) {
+  const button = byId("auto-collection-toggle");
+  const enabled = autoCollectionEnabled === true;
+  const hasToggle = bridge !== null && typeof bridge.set_auto_collection_enabled === "function";
+  button.textContent = enabled ? "전적 수집 중지" : "전적 수집 시작";
+  button.dataset.state = enabled ? "running" : "stopped";
+  // Stopping stays available even when the saved login session has expired.
+  // Starting requires a verified session so it cannot open a browser to a
+  // Buckler login page on a background timer.
+  button.disabled = !hasToggle || autoCollectionInFlight || autoCollectionEnabled === null
+    || (!enabled && !collectionAvailable);
+}
+
+function isSafeAutoCollectionStatus(result) {
+  return result && result.ok === true && typeof result.enabled === "boolean"
+    && Number.isInteger(result.interval_seconds) && result.interval_seconds >= 30;
+}
+
+async function restoreAutoCollectionStatus() {
+  if (autoCollectionStatusInFlight) return;
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.auto_collection_status !== "function") {
+    updateLoginAvailability();
+    return;
+  }
+
+  autoCollectionStatusInFlight = true;
+  updateLoginAvailability();
+  try {
+    const result = await bridge.auto_collection_status();
+    if (!isSafeAutoCollectionStatus(result)) {
+      autoCollectionEnabled = null;
+      setAutoCollectionStatus("자동 수집 상태를 확인할 수 없습니다. 잠시 후 앱을 다시 시작하세요.");
+      return;
+    }
+    autoCollectionEnabled = result.enabled;
+    const interval = number(result.interval_seconds);
+    setAutoCollectionStatus(result.enabled
+      ? `자동 전적 수집이 실행 중입니다. 최근 대전을 ${interval}초마다 확인합니다.`
+      : "자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.");
+  } catch (_) {
+    autoCollectionEnabled = null;
+    setAutoCollectionStatus("자동 수집 상태를 확인할 수 없습니다. 잠시 후 앱을 다시 시작하세요.");
+  } finally {
+    autoCollectionStatusInFlight = false;
+    updateLoginAvailability();
+  }
+}
+
+async function toggleAutoCollection() {
+  if (autoCollectionInFlight || typeof autoCollectionEnabled !== "boolean") return;
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.set_auto_collection_enabled !== "function") {
+    setAutoCollectionStatus("데스크톱 자동 수집 연결을 준비 중입니다.");
+    return;
+  }
+
+  const enabled = !autoCollectionEnabled;
+  if (enabled && !savedSessionVerified) {
+    setAutoCollectionStatus("자동 수집을 시작하려면 로그인 상태를 확인한 뒤 다시 시도하세요.");
+    return;
+  }
+
+  autoCollectionInFlight = true;
+  const button = byId("auto-collection-toggle");
+  button.setAttribute("aria-busy", "true");
+  updateLoginAvailability();
+  setAutoCollectionStatus(enabled
+    ? "자동 전적 수집을 시작하고 있습니다. 첫 확인을 준비합니다."
+    : "자동 전적 수집 중지를 요청했습니다. 진행 중인 요청은 안전하게 마무리합니다.");
+  try {
+    const result = await bridge.set_auto_collection_enabled(enabled);
+    if (!isSafeAutoCollectionStatus(result)) {
+      setAutoCollectionStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
+      return;
+    }
+    autoCollectionEnabled = result.enabled;
+    const interval = number(result.interval_seconds);
+    setAutoCollectionStatus(result.enabled
+      ? `자동 전적 수집을 시작했습니다. 최근 대전을 한 번 확인한 뒤 ${interval}초마다 갱신합니다.`
+      : "자동 전적 수집을 멈췄습니다. OBS에는 마지막으로 수집한 전적이 계속 표시됩니다.");
+    await refresh();
+  } catch (_) {
+    setAutoCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
+  } finally {
+    autoCollectionInFlight = false;
+    button.removeAttribute("aria-busy");
+    updateLoginAvailability();
+  }
+}
+
 function setMatchCollectionStatus(message) {
   byId("matches-collect-status").textContent = message;
 }
@@ -218,7 +317,10 @@ async function clearMatches() {
   try {
     const result = await bridge.clear_matches();
     if (result && result.ok === true && Number.isInteger(result.cleared)) {
-      setMatchResetStatus(`전적 ${number(result.cleared)}건을 초기화했습니다. 자동 수집이 다음 주기에 최신 전적을 채웁니다.`);
+      const followUp = autoCollectionEnabled === true
+        ? "자동 수집이 다음 주기에 최신 전적을 확인합니다."
+        : "자동 수집이 중지되어 있습니다. 필요하면 전적 수집 시작 또는 최근 대전 수집을 선택하세요.";
+      setMatchResetStatus(`전적 ${number(result.cleared)}건을 초기화했습니다. ${followUp}`);
       await refresh();
     } else {
       setMatchResetStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
@@ -424,11 +526,18 @@ async function refresh() {
 
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
+byId("auto-collection-toggle").addEventListener("click", () => { void toggleAutoCollection(); });
 byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
 byId("matches-reset").addEventListener("click", () => { void clearMatches(); });
 byId("legacy-quarantine-clear").addEventListener("click", () => { void ignoreLegacyQuarantines(); });
 configureObsUrl();
-window.addEventListener("pywebviewready", () => { void restoreSavedSession(); });
-window.setTimeout(() => { void restoreSavedSession(); }, 0);
+window.addEventListener("pywebviewready", () => {
+  void restoreSavedSession();
+  void restoreAutoCollectionStatus();
+});
+window.setTimeout(() => {
+  void restoreSavedSession();
+  void restoreAutoCollectionStatus();
+}, 0);
 void refresh();
 window.setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);

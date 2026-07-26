@@ -81,6 +81,15 @@ BUCKLER_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v2"
 STALE_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v1"
 _PROFILE_USER_CODE_PATTERN = re.compile(r"(?:^|/)profile/([0-9]{10})(?:/|$|[?#])")
 
+type _AutoCollectionRequest = tuple[str, Event, dict[str, bool | str | int]]
+
+
+class _AutoCollectionStateChanged:
+    """Wake the scheduler after a persisted automatic-collection state change."""
+
+
+_AUTO_COLLECTION_STATE_CHANGED = _AutoCollectionStateChanged()
+
 
 class DesktopStartupError(RuntimeError):
     """Raised when the local desktop host cannot become ready safely."""
@@ -101,11 +110,13 @@ class NativeLoginBridge:
             _new_id,
         )
         self._request_lock = Lock()
+        self._auto_collection_settings_lock = Lock()
         self._request_handlers: dict[str, Callable[[str], dict[str, bool | str | int]]] = {}
         self._collection_results: dict[str, dict[str, bool | str | int]] = {}
         self._coordinator = CollectionCoordinator(self._run_collection_request)
         self._capture_browser = PersistentBucklerBrowser()
         self._collection_dispatcher: Callable[[str], dict[str, bool | str | int]] | None = None
+        self._auto_collection_controller: Callable[[bool], None] | None = None
 
     def login(self) -> dict[str, bool | str]:
         """Discover and authenticate the account without exposing browser state."""
@@ -229,7 +240,89 @@ class NativeLoginBridge:
         """Admit one profile capture into the single collection queue."""
         return self._request_collection("PROFILE")
 
-    def _collect_profile(self, job_id: str) -> dict[str, bool | str | int]:
+    def auto_collection_status(self) -> dict[str, bool | str | int]:
+        """Return the durable automatic-collection preference without auth material."""
+        try:
+            enabled, interval_seconds = self._auto_collection_settings()
+            return {
+                "ok": True,
+                "enabled": enabled,
+                "interval_seconds": interval_seconds,
+            }
+        except Exception:
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    def set_auto_collection_enabled(self, enabled: bool) -> dict[str, bool | str | int]:
+        """Persist an opt-in setting, then wake the scheduler in the same process.
+
+        The scheduler receives the update only after SQLite commits.  If the
+        app exits immediately afterward, the next startup still restores the
+        user's choice rather than running with an in-memory-only state.
+        """
+        if not isinstance(enabled, bool):
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+        session = self._session_factory()
+        controller: Callable[[bool], None] | None = None
+        interval_seconds = int(AUTO_COLLECTION_INTERVAL_SECONDS)
+        try:
+            # Do not take ``self._lock`` here: a live Playwright capture holds
+            # it for its whole request.  Stopping automatic collection must
+            # persist and wake the scheduler immediately instead of making the
+            # user wait for a slow Buckler response.
+            with self._auto_collection_settings_lock:
+                settings = session.get(SettingsModel, 1)
+                now_ms = _now_ms()
+                if settings is None:
+                    settings = SettingsModel(
+                        id=1,
+                        auto_collect_enabled=enabled,
+                        collection_interval_seconds=interval_seconds,
+                        collection_limit=20,
+                        updated_at_ms=now_ms,
+                    )
+                    session.add(settings)
+                else:
+                    settings.auto_collect_enabled = enabled
+                    settings.updated_at_ms = now_ms
+                    interval_seconds = int(settings.collection_interval_seconds)
+                session.commit()
+                controller = self._auto_collection_controller
+            if controller is not None:
+                controller(enabled)
+            return {
+                "ok": True,
+                "enabled": enabled,
+                "interval_seconds": interval_seconds,
+            }
+        except Exception:
+            session.rollback()
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        finally:
+            session.close()
+
+    def set_auto_collection_controller(self, controller: Callable[[bool], None]) -> None:
+        """Attach the scheduler callback after it has restored durable state."""
+        self._auto_collection_controller = controller
+
+    def _auto_collection_settings(self) -> tuple[bool, int]:
+        """Load a fail-closed preference for a missing singleton settings row."""
+        session = self._session_factory()
+        try:
+            with self._auto_collection_settings_lock:
+                settings = session.get(SettingsModel, 1)
+                if settings is None:
+                    return False, int(AUTO_COLLECTION_INTERVAL_SECONDS)
+                return (
+                    bool(settings.auto_collect_enabled),
+                    int(settings.collection_interval_seconds),
+                )
+        finally:
+            session.close()
+
+    def _collect_profile(
+        self, job_id: str, *, collection_reason: str
+    ) -> dict[str, bool | str | int]:
         """Capture, preserve, and project the authenticated profile once."""
         try:
             with self._lock:
@@ -239,7 +332,7 @@ class NativeLoginBridge:
                 with self._uow_factory.write() as uow:
                     uow.jobs.add(
                         JobRecord(
-                            id=job_id, type="COLLECT", reason="MANUAL", state="RUNNING",
+                            id=job_id, type="COLLECT", reason=collection_reason, state="RUNNING",
                             phase="PROFILE", requested_at_ms=captured.fetched_at_ms,
                             started_at_ms=captured.fetched_at_ms, finished_at_ms=None,
                             progress_current=0, progress_total=1, error_code=None,
@@ -283,12 +376,20 @@ class NativeLoginBridge:
         """Route browser work through the one thread that owns Playwright."""
         self._collection_dispatcher = dispatcher
 
-    def run_scheduled_collection(self, key: str) -> dict[str, bool | str | int]:
+    def run_scheduled_collection(
+        self, key: str, *, collection_reason: str = "MANUAL"
+    ) -> dict[str, bool | str | int]:
         """Run one collection request from the Playwright-owning scheduler thread."""
         if key == "PROFILE":
-            return self._admit_collection("PROFILE", self._collect_profile)
+            return self._admit_collection(
+                "PROFILE",
+                lambda job_id: self._collect_profile(job_id, collection_reason=collection_reason),
+            )
         if key == "MATCHES":
-            return self._admit_collection("MATCHES", self._collect_matches)
+            return self._admit_collection(
+                "MATCHES",
+                lambda job_id: self._collect_matches(job_id, collection_reason=collection_reason),
+            )
         return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
 
     def _request_collection(self, key: str) -> dict[str, bool | str | int]:
@@ -301,7 +402,7 @@ class NativeLoginBridge:
         """Move the visible-history baseline without mutating immutable match evidence."""
         session = self._session_factory()
         try:
-            with self._lock:
+            with self._lock, self._auto_collection_settings_lock:
                 settings = session.get(SettingsModel, 1)
                 previous_reset_at_ms = (
                     settings.match_reset_at_ms
@@ -324,6 +425,9 @@ class NativeLoginBridge:
                     session.add(
                         SettingsModel(
                             id=1,
+                            auto_collect_enabled=False,
+                            collection_interval_seconds=int(AUTO_COLLECTION_INTERVAL_SECONDS),
+                            collection_limit=20,
                             match_reset_at_ms=reset_at_ms,
                             updated_at_ms=reset_at_ms,
                         )
@@ -387,7 +491,9 @@ class NativeLoginBridge:
         finally:
             session.close()
 
-    def _collect_matches(self, job_id: str) -> dict[str, bool | str | int]:
+    def _collect_matches(
+        self, job_id: str, *, collection_reason: str
+    ) -> dict[str, bool | str | int]:
         """Capture ranked matches, preserving raw entries before strict parsing."""
         try:
             with self._lock:
@@ -397,7 +503,7 @@ class NativeLoginBridge:
                 with self._uow_factory.write() as uow:
                     uow.jobs.add(
                         JobRecord(
-                            id=job_id, type="COLLECT", reason="MANUAL", state="RUNNING",
+                            id=job_id, type="COLLECT", reason=collection_reason, state="RUNNING",
                             phase="MATCHES", requested_at_ms=_now_ms(), started_at_ms=_now_ms(),
                             finished_at_ms=None, progress_current=0, progress_total=len(captured),
                             error_code=None, diagnostic_id=None, summary_json=None,
@@ -544,16 +650,24 @@ class NativeLoginBridge:
 
 
 class AutoCollectionScheduler:
-    """Refresh the local broadcast data without overlapping collection runs."""
+    """Run manual collection on demand and automatic collection only when enabled."""
 
-    def __init__(self, bridge: NativeLoginBridge, interval_seconds: float) -> None:
+    def __init__(
+        self,
+        bridge: NativeLoginBridge,
+        interval_seconds: float,
+        *,
+        automatic_enabled: bool = False,
+    ) -> None:
         self._bridge = bridge
         self._interval_seconds = interval_seconds
         self._stopped = Event()
         self._thread: Thread | None = None
         self._manual_requests: Queue[
-            tuple[str, Event, dict[str, bool | str | int]] | None
+            _AutoCollectionRequest | _AutoCollectionStateChanged | None
         ] = Queue()
+        self._automatic_state_lock = Lock()
+        self._automatic_enabled = automatic_enabled
         self._bridge.set_collection_dispatcher(self.request)
 
     def start(self) -> None:
@@ -579,39 +693,78 @@ class AutoCollectionScheduler:
             return {"ok": False, "code": "UPSTREAM.TIMEOUT"}
         return result
 
+    def set_auto_collection_enabled(self, enabled: bool) -> None:
+        """Wake a sleeping scheduler so a persisted toggle takes effect promptly."""
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a bool.")
+        with self._automatic_state_lock:
+            changed = self._automatic_enabled != enabled
+            self._automatic_enabled = enabled
+        if changed:
+            self._manual_requests.put(_AUTO_COLLECTION_STATE_CHANGED)
+
+    def _automatic_collection_enabled(self) -> bool:
+        with self._automatic_state_lock:
+            return self._automatic_enabled
+
     def _run(self) -> None:
         next_automatic_at = monotonic()
         profile_pending = True
         try:
             while not self._stopped.is_set():
-                timeout = max(0.0, next_automatic_at - monotonic())
+                timeout = (
+                    max(0.0, next_automatic_at - monotonic())
+                    if self._automatic_collection_enabled()
+                    else None
+                )
                 try:
                     request = self._manual_requests.get(timeout=timeout)
                 except Empty:
                     request = None
 
-                if request is not None:
+                if request is _AUTO_COLLECTION_STATE_CHANGED:
+                    if self._automatic_collection_enabled():
+                        next_automatic_at = monotonic()
+                    else:
+                        # Playwright belongs to this scheduler thread.  Closing
+                        # here releases the visible Chrome window without
+                        # racing a current capture on another thread.
+                        self._bridge.close()
+                    continue
+
+                if isinstance(request, tuple):
                     key, completed, result = request
                     result.update(self._bridge.run_scheduled_collection(key))
                     if key == "PROFILE" and result.get("ok") is True:
                         profile_pending = False
                     completed.set()
-                    next_automatic_at = monotonic() + self._interval_seconds
+                    if self._automatic_collection_enabled():
+                        next_automatic_at = monotonic() + self._interval_seconds
+                    else:
+                        self._bridge.close()
                     continue
 
                 if self._stopped.is_set():
                     break
+                if not self._automatic_collection_enabled():
+                    continue
                 if profile_pending:
-                    profile_result = self._bridge.run_scheduled_collection("PROFILE")
+                    profile_result = self._bridge.run_scheduled_collection(
+                        "PROFILE", collection_reason="SCHEDULED"
+                    )
                     profile_pending = profile_result.get("ok") is not True
-                if not self._stopped.is_set():
-                    match_result = self._bridge.run_scheduled_collection("MATCHES")
+                if not self._stopped.is_set() and self._automatic_collection_enabled():
+                    match_result = self._bridge.run_scheduled_collection(
+                        "MATCHES", collection_reason="SCHEDULED"
+                    )
                     if match_result.get("code") in {
                         "SESSION.MISSING",
                         "SESSION.EXPIRED",
                         "SESSION.ACCOUNT_MISMATCH",
                     }:
                         profile_pending = True
+                elif not self._automatic_collection_enabled():
+                    self._bridge.close()
                 next_automatic_at = monotonic() + self._interval_seconds
         finally:
             self._bridge.close()
@@ -620,7 +773,7 @@ class AutoCollectionScheduler:
                     request = self._manual_requests.get_nowait()
                 except Empty:
                     break
-                if request is not None:
+                if isinstance(request, tuple):
                     _, completed, result = request
                     result.update({"ok": False, "code": "INTERNAL.UNEXPECTED"})
                     completed.set()
@@ -856,7 +1009,19 @@ def run_desktop() -> int:
         server = LoopbackServer(application)
         server.start()
         bridge = NativeLoginBridge(paths, session_factory)
-        scheduler = AutoCollectionScheduler(bridge, AUTO_COLLECTION_INTERVAL_SECONDS)
+        auto_collection_status = bridge.auto_collection_status()
+        initial_auto_collection_enabled = auto_collection_status.get("enabled") is True
+        initial_interval_seconds = auto_collection_status.get("interval_seconds")
+        if not isinstance(initial_interval_seconds, int) or isinstance(
+            initial_interval_seconds, bool
+        ):
+            initial_interval_seconds = int(AUTO_COLLECTION_INTERVAL_SECONDS)
+        scheduler = AutoCollectionScheduler(
+            bridge,
+            float(initial_interval_seconds),
+            automatic_enabled=initial_auto_collection_enabled,
+        )
+        bridge.set_auto_collection_controller(scheduler.set_auto_collection_enabled)
         scheduler.start()
         _open_desktop_window(
             server.dashboard_url,

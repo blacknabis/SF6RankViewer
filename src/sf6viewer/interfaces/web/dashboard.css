@@ -34,6 +34,7 @@ button:disabled { cursor: wait; opacity: .55; }
 .copy-row { display: flex; align-items: end; gap: 8px; } .copy-row input { margin-top: 0; } .copy-row button { flex: 0 0 auto; margin-top: 0; }
 .collection-action { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
 .collection-action p { margin: 10px 0 0; color: var(--muted); }
+.collection-action button[data-state="running"] { background: var(--warning); }
 .details { display: grid; grid-template-columns: minmax(7rem, 1fr) 2fr; gap: 8px 16px; margin: 0; }
 .details dt { color: var(--muted); } .details dd { margin: 0; overflow-wrap: anywhere; }
 .compact-list { display: grid; gap: 8px; margin: 0; padding-left: 20px; }

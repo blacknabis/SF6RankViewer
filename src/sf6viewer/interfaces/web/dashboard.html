@@ -33,7 +33,11 @@
           <button id="login-submit" type="submit" disabled>로그인 시작</button>
         </form>
         <p id="login-status" role="status" aria-live="polite">데스크톱 로그인 연결을 준비 중입니다.</p>
-        <p class="muted">프로필은 로그인 후 한 번 수집하고, 최근 대전만 30초마다 자동으로 갱신합니다.</p>
+        <p class="muted">자동 수집을 시작하면 최근 대전을 30초마다 확인합니다. 프로필은 로그인 확인이 필요할 때만 수집합니다.</p>
+        <div class="collection-action">
+          <button id="auto-collection-toggle" type="button" disabled>전적 수집 시작</button>
+          <p id="auto-collection-status" role="status" aria-live="polite">자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.</p>
+        </div>
         <div class="collection-action">
           <button id="matches-collect" type="button" disabled>최근 대전 수집</button>
           <p id="matches-collect-status" role="status" aria-live="polite">자동 갱신을 기다리지 않고 지금 수집할 때 사용하세요.</p>
