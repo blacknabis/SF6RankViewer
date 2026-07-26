@@ -17,6 +17,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from sf6viewer import __version__
 from sf6viewer.infrastructure.db.models import (
     IngestionRunModel,
     JobModel,
@@ -187,6 +188,7 @@ class SystemResponse(ApiModel):
     """Safe local overview for desktop UI startup and empty-state decisions."""
 
     status: Literal["ok"] = "ok"
+    app_version: str
     match_count: int = Field(ge=0)
     profile_snapshot_count: int = Field(ge=0)
     open_quarantine_count: int = Field(ge=0)
@@ -389,6 +391,7 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
 
         reset_at_ms = _match_reset_at_ms(session)
         return SystemResponse(
+            app_version=__version__,
             match_count=int(
                 session.scalar(
                     select(func.count())

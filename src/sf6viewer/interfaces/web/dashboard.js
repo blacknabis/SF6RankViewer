@@ -504,6 +504,9 @@ async function refresh() {
       getJson("/api/v1/quarantine?page_size=5&status=OPEN"), getJson("/api/v1/ingestion-runs?page_size=5")
     ]);
     if (health.status !== "ok" || system.status !== "ok") throw new Error("로컬 서비스 상태를 확인할 수 없습니다.");
+    byId("app-version").textContent = typeof system.app_version === "string"
+      ? `v${system.app_version}`
+      : "버전 정보 없음";
     byId("match-count").textContent = number(system.match_count);
     byId("profile-count").textContent = number(system.profile_snapshot_count);
     byId("running-job-count").textContent = number(system.running_job_count);

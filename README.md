@@ -1,4 +1,4 @@
-# SF6Viewer V2.1
+# SF6Viewer V2.2
 
 Street Fighter 6의 Buckler 프로필과 최근 대전 기록을 로컬에 수집하고, 방송 중 OBS에 실시간 전적을 표시하는 Windows 데스크톱 앱입니다.
 
@@ -7,6 +7,8 @@ V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그�
 ## 주요 기능
 
 - Buckler 로그인 세션을 Windows DPAPI로 암호화해 저장
+- 로그인과 수집에 설치된 Chrome 또는 Edge를 사용해 EXE에서도 로그인 창을 안정적으로 실행
+- 앱 창 제목과 대시보드에서 현재 실행 중인 버전을 확인 가능
 - 로그인한 Buckler 프로필에서 사용자 코드를 자동 확인
 - 랭크 게임 중에만 켜는 전적 수집 시작·중지 기능(마지막 상태를 앱 재시작 뒤에도 유지)
 - 자동 수집을 시작한 뒤 최근 대전을 30초마다 수집하며, 프로필은 필요할 때만 확인
@@ -21,7 +23,7 @@ V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그�
 Windows에서 [최신 정식 릴리스의 `SF6Viewer.exe`](https://github.com/blacknabis/SF6RankViewer/releases/latest/download/SF6Viewer.exe) 하나만 내려받아 실행하면 됩니다.
 
 1. `SF6Viewer.exe`를 실행합니다.
-2. 처음 사용할 때만 **로그인**을 눌러 열린 Buckler 브라우저에서 로그인을 완료합니다.
+2. 처음 사용할 때만 **로그인**을 눌러 열린 Chrome 또는 Edge의 Buckler 브라우저에서 로그인을 완료합니다.
 3. 이후 저장된 로그인 세션을 복원하므로 매번 사용자 코드를 입력할 필요가 없습니다.
 4. 랭크 게임을 시작할 때 **전적 수집 시작**을 누릅니다. 처음에는 자동 수집이 꺼져 있습니다.
 5. 실행 중에는 최근 대전 기록을 30초마다 자동으로 확인합니다. 게임이 끝나면 **전적 수집 중지**를 누르세요.
@@ -58,7 +60,7 @@ V2 데이터는 다음 위치에 저장됩니다.
 - Windows 10/11
 - Python 3.12.13 이상
 - [uv](https://docs.astral.sh/uv/)
-- Google Chrome
+- Google Chrome 또는 Microsoft Edge
 - Microsoft Edge WebView2 Runtime
 
 ```powershell

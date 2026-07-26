@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+import sf6viewer
 from sf6viewer.infrastructure.db.engine import create_engine_for, create_session_factory
 from sf6viewer.infrastructure.db.models import AccountModel, Base, MatchModel, SettingsModel
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
@@ -82,6 +83,7 @@ def test_reset_hides_existing_matches_and_preserves_future_matches(tmp_path: Pat
         session.close()
 
     with TestClient(create_read_api(session_factory)) as client:
+        assert client.get("/api/v1/system").json()["app_version"] == sf6viewer.__version__
         assert client.get("/api/v1/system").json()["match_count"] == 0
         assert client.get("/api/v1/matches/latest").json()["page"]["total"] == 0
         assert client.get("/api/v1/obs").json()["statistics"]["total"] == {

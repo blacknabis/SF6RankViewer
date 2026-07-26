@@ -64,6 +64,7 @@ exe = EXE(
     [],
     name="SF6Viewer",
     debug=False,
+    version=str(project_root / "packaging" / "version_info.txt"),
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,

@@ -10,6 +10,7 @@ from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 from sf6viewer.domain.errors import DomainError
 from sf6viewer.domain.value_objects import UserCode
 from sf6viewer.infrastructure.auth.dpapi_vault import AuthSession
+from sf6viewer.infrastructure.buckler.browser_capture import launch_visible_system_browser
 
 _INTERACTIVE_LOGIN_FAILED = "Interactive sign-in could not be completed."
 
@@ -35,7 +36,10 @@ class PlaywrightAuthBrowser:
         try:
             with sync_playwright() as playwright:
                 try:
-                    browser = playwright.chromium.launch(headless=False)
+                    # The packaged EXE does not bundle Playwright's Chromium.
+                    # Use the same installed Chrome/Edge launcher as collection
+                    # so interactive login can always open a visible browser.
+                    browser = launch_visible_system_browser(playwright)
                     context = browser.new_context()
                     page = context.new_page()
                     page.goto(self._target_url)

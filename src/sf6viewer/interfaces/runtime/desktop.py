@@ -25,6 +25,7 @@ from playwright.sync_api import Page
 from sqlalchemy import Engine, and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from sf6viewer import __version__
 from sf6viewer.application.ports.repositories import IngestionRecord, JobRecord
 from sf6viewer.application.services.collection_coordinator import (
     CanonicalRequestKey,
@@ -951,7 +952,7 @@ def _open_desktop_window(url: str, *, js_api: object) -> None:
     import webview
 
     webview.create_window(
-        "SF6Viewer",
+        f"SF6Viewer v{__version__}",
         url=url,
         width=1280,
         height=800,
@@ -969,7 +970,7 @@ def _show_safe_startup_error() -> bool:
         if webview.windows:
             return False
         webview.create_window(
-            "SF6Viewer",
+            f"SF6Viewer v{__version__}",
             html=(
                 "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
                 "<title>SF6Viewer</title></head><body>"
