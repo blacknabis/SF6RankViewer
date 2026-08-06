@@ -1,8 +1,10 @@
-# SF6Viewer V2.2
+# SF6Viewer V2.2.1
 
 Street Fighter 6의 Buckler 프로필과 최근 대전 기록을 로컬에 수집하고, 방송 중 OBS에 실시간 전적을 표시하는 Windows 데스크톱 앱입니다.
 
 V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그레이션했습니다. 원본 응답을 먼저 보존한 뒤 검증된 데이터만 화면에 반영하며, 로그인 정보와 전적 데이터는 사용자 PC에만 저장합니다.
+
+현재 정식 버전은 [SF6Viewer v2.2.1](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.2.1)입니다.
 
 ## 주요 기능
 
@@ -14,6 +16,7 @@ V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그�
 - 자동 수집을 시작한 뒤 최근 대전을 30초마다 수집하며, 프로필은 필요할 때만 확인
 - 수집용 브라우저가 닫힌 경우 다음 수집 때 자동 복구
 - 원본 응답 보존, 중복 방지, 검증 실패 데이터 격리
+- 야스민 등 랭크 미배치 캐릭터의 미확정 LP를 정상 처리
 - 전적 초기화 및 최근 수집 데이터 복구
 - V1 형태의 OBS 전적 오버레이 제공
 - OBS 서버 포트 `8000` 고정
@@ -96,6 +99,14 @@ uv run pytest tests/unit -q
 ```
 
 ## 업데이트 내역
+
+### V2.2.1 (2026-08-07)
+
+- 신규 캐릭터 야스민의 랭크 미배치 상태에서 Buckler가 반환하는 `league_point: -1`을 미확정 값으로 처리
+- 정상 랭크 게임이 `UPSTREAM.CONTRACT_CHANGED`로 격리되던 문제 해결
+- 잘못된 평점 형식은 계속 격리해 원본 데이터 검증 유지
+
+[GitHub 릴리스](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.2.1)에서 최신 `SF6Viewer.exe`를 받을 수 있습니다.
 
 [CHANGELOG.md](CHANGELOG.md)에서 버전별 변경 사항을 확인할 수 있습니다.
 
