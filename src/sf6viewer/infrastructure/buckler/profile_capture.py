@@ -76,8 +76,8 @@ def normalize_profile(payload: Mapping[str, JsonValue]) -> NormalizedProfile:
         display_name=_optional_text(personal_info.get("fighter_id")),
         character=_optional_text(banner.get("favorite_character_alpha")),
         rank_name=_optional_text(rank_info.get("league_rank_name")),
-        mr=_optional_nonnegative_int(league_info.get("master_rating")),
-        lp=_optional_nonnegative_int(league_info.get("league_point")),
+        mr=_optional_rating_int(league_info.get("master_rating")),
+        lp=_optional_rating_int(league_info.get("league_point")),
     )
 
 
@@ -121,9 +121,9 @@ def _optional_text(value: object) -> str | None:
     return value.strip()
 
 
-def _optional_nonnegative_int(value: object) -> int | None:
+def _optional_rating_int(value: object) -> int | None:
     if value is None:
         return None
-    if type(value) is not int or value < 0:
+    if type(value) is not int or value < -1:
         raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
-    return value
+    return None if value == -1 else value

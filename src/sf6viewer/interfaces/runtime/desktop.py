@@ -78,7 +78,7 @@ BUCKLER_KOREAN_URL = "https://www.streetfighter.com/6/buckler/ko-kr"
 AUTHENTICATED_PROFILE_TIMEOUT_MS = 120_000
 AUTO_COLLECTION_INTERVAL_SECONDS = 30.0
 MANUAL_COLLECTION_TIMEOUT_SECONDS = 120.0
-BUCKLER_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v2"
+BUCKLER_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v3"
 STALE_BATTLELOG_PARSER_VERSION = "buckler-battlelog-v1"
 _PROFILE_USER_CODE_PATTERN = re.compile(r"(?:^|/)profile/([0-9]{10})(?:/|$|[?#])")
 

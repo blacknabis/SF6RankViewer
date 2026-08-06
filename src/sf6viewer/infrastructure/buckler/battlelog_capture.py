@@ -140,8 +140,8 @@ def _replay_player(value: object) -> dict[str, object]:
         "character": _required_text(
             info.get("playing_character_name") or info.get("character_name")
         ),
-        "master_rating": _required_nonnegative_int(info.get("master_rating")),
-        "league_point": _required_nonnegative_int(info.get("league_point")),
+        "master_rating": _required_rating_int(info.get("master_rating")),
+        "league_point": _required_rating_int(info.get("league_point")),
         "round_results": _round_results(info.get("round_results")),
     }
 
@@ -181,9 +181,13 @@ def _result_for_mine(mine: Mapping[str, object], opponent: Mapping[str, object])
 
 
 def _rating(player: Mapping[str, object]) -> tuple[int | None, int | None]:
-    master_rating = _required_nonnegative_int(player.get("master_rating"))
-    league_point = _required_nonnegative_int(player.get("league_point"))
-    return (master_rating, None) if master_rating > 0 else (None, league_point)
+    master_rating = _optional_nonnegative_int(player.get("master_rating"))
+    league_point = _optional_nonnegative_int(player.get("league_point"))
+    return (
+        (master_rating, None)
+        if master_rating is not None and master_rating > 0
+        else (None, league_point)
+    )
 
 
 def _uploaded_at(value: object) -> tuple[int, str]:
@@ -243,3 +247,15 @@ def _required_nonnegative_int(value: object) -> int:
     if type(value) is not int or value < 0:
         raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
     return value
+
+
+def _required_rating_int(value: object) -> int | None:
+    if type(value) is not int or value < -1:
+        raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
+    return None if value == -1 else value
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _required_nonnegative_int(value)
