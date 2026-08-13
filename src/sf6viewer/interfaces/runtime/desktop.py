@@ -188,6 +188,7 @@ class NativeLoginBridge:
         service = LoginService(
             auth_browser=PlaywrightAuthBrowser(
                 target_url=BUCKLER_KOREAN_URL,
+                profile_dir=self._paths.login_browser_profile_dir,
                 wait_for_authenticated=_wait_for_authenticated_profile,
                 extract_user_code=_extract_profile_user_code,
             ),

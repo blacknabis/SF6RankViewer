@@ -1,15 +1,16 @@
-# SF6Viewer V2.2.1
+# SF6Viewer V2.2.2
 
 Street Fighter 6의 Buckler 프로필과 최근 대전 기록을 로컬에 수집하고, 방송 중 OBS에 실시간 전적을 표시하는 Windows 데스크톱 앱입니다.
 
 V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그레이션했습니다. 원본 응답을 먼저 보존한 뒤 검증된 데이터만 화면에 반영하며, 로그인 정보와 전적 데이터는 사용자 PC에만 저장합니다.
 
-현재 정식 버전은 [SF6Viewer v2.2.1](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.2.1)입니다.
+현재 정식 버전은 [SF6Viewer v2.2.2](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.2.2)입니다.
 
 ## 주요 기능
 
 - Buckler 로그인 세션을 Windows DPAPI로 암호화해 저장
 - 로그인과 수집에 설치된 Chrome 또는 Edge를 사용해 EXE에서도 로그인 창을 안정적으로 실행
+- 앱 전용 로그인 브라우저 프로필을 사용해 반복되는 봇 확인을 줄이고 재인증 상태 유지
 - 앱 창 제목과 대시보드에서 현재 실행 중인 버전을 확인 가능
 - 로그인한 Buckler 프로필에서 사용자 코드를 자동 확인
 - 랭크 게임 중에만 켜는 전적 수집 시작·중지 기능(마지막 상태를 앱 재시작 뒤에도 유지)
@@ -49,6 +50,7 @@ V2 데이터는 다음 위치에 저장됩니다.
 ```text
 %LOCALAPPDATA%\SF6Viewer
 ├─ auth\buckler.dpapi          # 현재 Windows 사용자만 복호화 가능한 로그인 정보
+├─ browser\login\             # Chrome/Edge가 보호하는 앱 전용 로그인 프로필
 ├─ data\sf6viewer-v2.db        # 프로필, 대전 기록, 수집 상태
 ├─ legacy\                    # V1 마이그레이션 백업과 보고서
 └─ logs\                      # 민감정보가 제거된 진단 로그
@@ -99,6 +101,14 @@ uv run pytest tests/unit -q
 ```
 
 ## 업데이트 내역
+
+### V2.2.2 (2026-08-13)
+
+- 릴리스 EXE에서 재인증할 때 Cloudflare 봇 확인이 반복되던 문제 해결
+- 앱 전용 로그인 브라우저 프로필을 유지해 보안 확인과 CAPCOM 로그인 상태 재사용
+- Chrome 136 이후 보안 정책에 맞춰 기본 사용자 프로필과 로그인 자동화 프로필 분리
+
+[GitHub 릴리스](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.2.2)에서 최신 `SF6Viewer.exe`를 받을 수 있습니다.
 
 ### V2.2.1 (2026-08-07)
 

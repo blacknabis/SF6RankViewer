@@ -65,6 +65,7 @@ def test_paths_expose_the_required_child_locations(tmp_path: Path) -> None:
     assert paths.legacy_reports_dir == tmp_path / "legacy" / "reports"
     assert paths.logs_dir == tmp_path / "logs"
     assert paths.crash_dir == tmp_path / "crash"
+    assert paths.login_browser_profile_dir == tmp_path / "browser" / "login"
     assert paths.runtime_path == tmp_path / "runtime" / "instance.json"
 
 
@@ -81,6 +82,8 @@ def test_ensure_directories_creates_only_required_directories_idempotently(tmp_p
     } == {
         Path("auth"),
         Path("backgrounds"),
+        Path("browser"),
+        Path("browser/login"),
         Path("crash"),
         Path("data"),
         Path("legacy"),

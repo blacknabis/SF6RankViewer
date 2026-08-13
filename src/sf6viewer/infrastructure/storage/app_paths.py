@@ -74,6 +74,11 @@ class AppPaths:
         return self.root / "crash"
 
     @property
+    def login_browser_profile_dir(self) -> Path:
+        """Dedicated persistent profile for user-driven Buckler authentication."""
+        return self.root / "browser" / "login"
+
+    @property
     def runtime_path(self) -> Path:
         """Path to runtime coordination state."""
         return self.root / "runtime" / "instance.json"
@@ -88,6 +93,7 @@ class AppPaths:
             self.legacy_reports_dir,
             self.logs_dir,
             self.crash_dir,
+            self.login_browser_profile_dir,
             self.runtime_path.parent,
         )
         for directory in directories:
