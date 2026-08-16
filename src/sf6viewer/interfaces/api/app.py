@@ -354,6 +354,18 @@ def _match_reset_at_ms(session: Session) -> int:
     return settings.match_reset_at_ms
 
 
+def _resolve_active_character(
+    latest_match: MatchModel | None,
+    latest_profile: ProfileSnapshotModel | None,
+) -> str | None:
+    """Resolve the active character for filtering, ignoring empty strings and whitespace."""
+    if latest_match is not None and latest_match.my_character and latest_match.my_character.strip():
+        return latest_match.my_character.strip()
+    if latest_profile is not None and latest_profile.character and latest_profile.character.strip():
+        return latest_profile.character.strip()
+    return None
+
+
 def create_read_api(session_factory: SessionFactory) -> FastAPI:
     """Create the v2 local read API.
 
@@ -396,12 +408,17 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
                 session.scalar(
                     select(func.count())
                     .select_from(MatchModel)
-                    .where(MatchModel.occurred_at_ms > reset_at_ms)
+                    .where(MatchModel.account_id == 1, MatchModel.occurred_at_ms > reset_at_ms)
                 )
                 or 0
             ),
             profile_snapshot_count=int(
-                session.scalar(select(func.count()).select_from(ProfileSnapshotModel)) or 0
+                session.scalar(
+                    select(func.count())
+                    .select_from(ProfileSnapshotModel)
+                    .where(ProfileSnapshotModel.account_id == 1)
+                )
+                or 0
             ),
             open_quarantine_count=int(
                 session.scalar(
@@ -432,7 +449,7 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         reset_at_ms = _match_reset_at_ms(session)
         statement = (
             select(MatchModel)
-            .where(MatchModel.occurred_at_ms > reset_at_ms)
+            .where(MatchModel.account_id == 1, MatchModel.occurred_at_ms > reset_at_ms)
             .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
         )
         records = session.scalars(
@@ -444,7 +461,7 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
                 session.scalar(
                     select(func.count())
                     .select_from(MatchModel)
-                    .where(MatchModel.occurred_at_ms > reset_at_ms)
+                    .where(MatchModel.account_id == 1, MatchModel.occurred_at_ms > reset_at_ms)
                 ),
                 page,
                 page_size,
@@ -459,8 +476,10 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
     ) -> ProfileSnapshotPage:
         """List player profile observations from newest to oldest."""
 
-        statement = select(ProfileSnapshotModel).order_by(
-            ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc()
+        statement = (
+            select(ProfileSnapshotModel)
+            .where(ProfileSnapshotModel.account_id == 1)
+            .order_by(ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc())
         )
         records = session.scalars(
             statement.limit(page_size).offset((page - 1) * page_size)
@@ -468,7 +487,11 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         return ProfileSnapshotPage(
             items=tuple(_profile_response(record) for record in records),
             page=_page_metadata(
-                session.scalar(select(func.count()).select_from(ProfileSnapshotModel)),
+                session.scalar(
+                    select(func.count())
+                    .select_from(ProfileSnapshotModel)
+                    .where(ProfileSnapshotModel.account_id == 1)
+                ),
                 page,
                 page_size,
             ),
@@ -491,7 +514,9 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         return IngestionRunPage(
             items=tuple(_ingestion_response(record) for record in records),
             page=_page_metadata(
-                session.scalar(select(func.count()).select_from(IngestionRunModel)), page, page_size
+                session.scalar(select(func.count()).select_from(IngestionRunModel)),
+                page,
+                page_size,
             ),
         )
 
@@ -548,21 +573,38 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         """Return V1-style broadcast statistics without exposing private source data."""
 
         latest_profile = session.scalar(
-            select(ProfileSnapshotModel).order_by(
-                ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc()
-            ).limit(1)
+            select(ProfileSnapshotModel)
+            .where(ProfileSnapshotModel.account_id == 1)
+            .order_by(ProfileSnapshotModel.observed_at_ms.desc(), ProfileSnapshotModel.id.desc())
+            .limit(1)
         )
         recent_limit = 100
         reset_at_ms = _match_reset_at_ms(session)
+        latest_match = session.scalar(
+            select(MatchModel)
+            .where(MatchModel.account_id == 1, MatchModel.occurred_at_ms > reset_at_ms)
+            .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+            .limit(1)
+        )
+        active_character = _resolve_active_character(latest_match, latest_profile)
+        char_filter = (
+            (MatchModel.my_character == active_character,)
+            if active_character is not None
+            else ()
+        )
+
         recent_matches = list(
             session.scalars(
                 select(MatchModel)
-                .where(MatchModel.occurred_at_ms > reset_at_ms)
+                .where(
+                    MatchModel.account_id == 1,
+                    MatchModel.occurred_at_ms > reset_at_ms,
+                    *char_filter,
+                )
                 .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
                 .limit(recent_limit)
             ).all()
         )
-        latest_match = recent_matches[0] if recent_matches else None
         latest_job = session.scalar(
             select(JobModel).order_by(JobModel.requested_at_ms.desc(), JobModel.id.desc()).limit(1)
         )
@@ -572,8 +614,10 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         if latest_match is not None:
             character_record = _record_summary(
                 session,
+                MatchModel.account_id == 1,
                 MatchModel.occurred_at_ms > reset_at_ms,
                 MatchModel.opponent_character == latest_match.opponent_character,
+                *char_filter,
             )
             opponent_character = ObsOpponentSummary(
                 label=latest_match.opponent_character,
@@ -582,8 +626,10 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
             )
             player_record = _record_summary(
                 session,
+                MatchModel.account_id == 1,
                 MatchModel.occurred_at_ms > reset_at_ms,
                 MatchModel.opponent_name == latest_match.opponent_name,
+                *char_filter,
             )
             opponent_player = ObsOpponentSummary(
                 label=latest_match.opponent_name,
@@ -595,8 +641,10 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
             session.scalars(
                 select(MatchModel)
                 .where(
+                    MatchModel.account_id == 1,
                     MatchModel.occurred_at_ms > reset_at_ms,
                     MatchModel.my_mr.is_not(None),
+                    *char_filter,
                 )
                 .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
                 .limit(recent_limit)
@@ -608,7 +656,12 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
             latest_job=_job_response(latest_job) if latest_job is not None else None,
             statistics=ObsStatistics(
                 recent_limit=recent_limit,
-                total=_record_summary(session, MatchModel.occurred_at_ms > reset_at_ms),
+                total=_record_summary(
+                    session,
+                    MatchModel.account_id == 1,
+                    MatchModel.occurred_at_ms > reset_at_ms,
+                    *char_filter,
+                ),
                 recent=_record_summary_from_matches(recent_matches),
                 opponent_character=opponent_character,
                 opponent_player=opponent_player,

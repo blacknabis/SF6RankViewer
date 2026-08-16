@@ -21,8 +21,18 @@ class MatchModel(Base):
         CheckConstraint("opponent_mr IS NULL OR opponent_mr >= 0", name="ck_matches_opponent_mr_nonnegative"),
         CheckConstraint("opponent_lp IS NULL OR opponent_lp >= 0", name="ck_matches_opponent_lp_nonnegative"),
         CheckConstraint("result IN ('WIN', 'LOSE', 'DRAW')", name="ck_matches_result"),
+        CheckConstraint(
+            "length(trim(my_character)) > 0",
+            name="ck_matches_my_character_nonempty",
+        ),
         UniqueConstraint("account_id", "identity_key", name="uq_matches_account_identity_key"),
         Index("ix_matches_account_occurred_at_ms", "account_id", "occurred_at_ms"),
+        Index(
+            "ix_matches_account_char_occurred_at_ms",
+            "account_id",
+            "my_character",
+            "occurred_at_ms",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)

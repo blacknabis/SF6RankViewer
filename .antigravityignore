@@ -1,0 +1,22 @@
+# Sensitive credentials and tokens
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.cert
+auth.json
+user_config.json
+secrets.json
+
+# Local runtime databases & logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Build & binary outputs
+dist/
+build/
+*.zip
+*.exe

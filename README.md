@@ -1,13 +1,14 @@
-# SF6Viewer V2.2.2
+# SF6Viewer V2.3.0
 
 Street Fighter 6의 Buckler 프로필과 최근 대전 기록을 로컬에 수집하고, 방송 중 OBS에 실시간 전적을 표시하는 Windows 데스크톱 앱입니다.
 
 V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그레이션했습니다. 원본 응답을 먼저 보존한 뒤 검증된 데이터만 화면에 반영하며, 로그인 정보와 전적 데이터는 사용자 PC에만 저장합니다.
 
-현재 정식 버전은 [SF6Viewer v2.2.2](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.2.2)입니다.
+현재 정식 버전은 [SF6Viewer v2.3.0](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.3.0)입니다.
 
 ## 주요 기능
 
+- **마지막 플레이 캐릭터 기준 전적/MR 그래프 자동 분리**: 방송 중 캐릭터를 변경하면 해당 캐릭터의 전체 승률, 최근 100게임 전적, MR 변동 그래프가 자동으로 전환되어 표시
 - Buckler 로그인 세션을 Windows DPAPI로 암호화해 저장
 - 로그인과 수집에 설치된 Chrome 또는 Edge를 사용해 EXE에서도 로그인 창을 안정적으로 실행
 - 앱 전용 로그인 브라우저 프로필을 사용해 반복되는 봇 확인을 줄이고 재인증 상태 유지
@@ -25,7 +26,6 @@ V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그�
 ## 빠른 실행
 
 Windows에서 [최신 정식 릴리스의 `SF6Viewer.exe`](https://github.com/blacknabis/SF6RankViewer/releases/latest/download/SF6Viewer.exe) 하나만 내려받아 실행하면 됩니다.
-
 1. `SF6Viewer.exe`를 실행합니다.
 2. 처음 사용할 때만 **로그인**을 눌러 열린 Chrome 또는 Edge의 Buckler 브라우저에서 로그인을 완료합니다.
 3. 이후 저장된 로그인 세션을 복원하므로 매번 사용자 코드를 입력할 필요가 없습니다.
