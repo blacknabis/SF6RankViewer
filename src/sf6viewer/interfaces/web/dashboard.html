@@ -3,9 +3,12 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark light">
+    <meta name="color-scheme" content="dark">
     <title>SF6Viewer</title>
     <link rel="stylesheet" href="/ui/dashboard.css">
+    <script src="/ui/viewer-metrics.js" defer></script>
+    <script src="/ui/dashboard-controller.js" defer></script>
+    <script src="/ui/dashboard-viewer.js" defer></script>
     <script src="/ui/dashboard.js" defer></script>
   </head>
   <body>
@@ -22,91 +25,237 @@
       </div>
     </header>
 
+    <nav class="tab-navigation" aria-label="대시보드 화면">
+      <div class="tab-list" role="tablist" aria-label="대시보드 탭">
+        <button id="tab-viewer" class="tab-button" type="button" role="tab" aria-controls="panel-viewer" aria-selected="true" tabindex="0">📊 실시간 뷰어</button>
+        <button id="tab-manage" class="tab-button" type="button" role="tab" aria-controls="panel-manage" aria-selected="false" tabindex="-1">⚙️ 수집/연결 관리</button>
+      </div>
+    </nav>
+
     <main id="content" tabindex="-1">
-      <section id="page-state" class="notice" aria-live="polite">
-        데이터를 안전하게 불러오는 중입니다.
+      <section id="panel-viewer" class="tab-panel" role="tabpanel" aria-labelledby="tab-viewer" tabindex="0">
+        <p id="viewer-state" class="sr-only" role="status" aria-live="polite">실시간 전적을 불러오는 중입니다.</p>
+        <p id="viewer-error" class="viewer-error" role="alert" hidden>실시간 데이터를 불러오지 못했습니다. 잠시 후 다시 시도합니다.</p>
+
+        <section id="viewer-profile-banner" class="profile-banner panel" aria-labelledby="viewer-profile-name">
+          <div class="profile-identity">
+            <p class="eyebrow">CURRENT FIGHTER</p>
+            <h2 id="viewer-profile-name">플레이어 정보 없음</h2>
+            <p class="profile-meta">
+              <strong id="viewer-profile-character">—</strong>
+              <span aria-hidden="true">/</span>
+              <span id="viewer-profile-rank">—</span>
+            </p>
+            <p id="viewer-profile-empty" class="empty-state">Buckler 로그인 후 프로필과 전적을 수집해 주세요.</p>
+          </div>
+          <div class="profile-live">
+            <p id="viewer-profile-rating" class="profile-rating">— MR / — LP</p>
+            <div id="viewer-live-badge" class="live-badge" data-live="false" aria-hidden="true">
+              <span class="live-dot"></span>
+              <span>RECORDING OFF</span>
+            </div>
+            <p id="viewer-live-status" class="sr-only" role="status" aria-live="polite">자동 수집 상태 확인 중</p>
+          </div>
+        </section>
+
+        <section class="viewer-kpi-grid" aria-label="전적 핵심 지표">
+          <article id="kpi-total" class="kpi-card panel">
+            <p class="kpi-label">TOTAL</p>
+            <strong id="kpi-total-rate" class="kpi-value">0.0%</strong>
+            <p id="kpi-total-record" class="kpi-detail">0W 0L</p>
+            <progress id="kpi-total-progress" class="win-progress" max="100" value="0" aria-label="전체 승률">0%</progress>
+          </article>
+          <article id="kpi-recent" class="kpi-card panel">
+            <p class="kpi-label">RECENT 100</p>
+            <strong id="kpi-recent-rate" class="kpi-value">0.0%</strong>
+            <p id="kpi-recent-record" class="kpi-detail">0W 0L</p>
+            <progress id="kpi-recent-progress" class="win-progress" max="100" value="0" aria-label="최근 100전 승률">0%</progress>
+          </article>
+          <article id="kpi-session" class="kpi-card panel">
+            <div class="kpi-heading-row">
+              <p class="kpi-label">SESSION DELTA</p>
+              <label class="compact-select" for="viewer-delta-mode">
+                <span class="sr-only">세션 변동 기준</span>
+                <select id="viewer-delta-mode" aria-label="세션 변동 기준">
+                  <option value="session" selected>앱 세션</option>
+                  <option value="range">표시 구간</option>
+                </select>
+              </label>
+            </div>
+            <strong id="kpi-session-delta" class="kpi-value delta-neutral">—</strong>
+            <p id="kpi-session-context" class="kpi-detail">앱 시작 기준</p>
+          </article>
+          <article id="kpi-streak" class="kpi-card panel">
+            <p class="kpi-label">STREAK</p>
+            <strong id="kpi-streak-value" class="kpi-value">—</strong>
+            <p id="kpi-streak-context" class="kpi-detail">현재 연속 결과 없음</p>
+          </article>
+        </section>
+
+        <div class="viewer-primary-grid">
+          <section class="chart-panel panel" aria-labelledby="chart-heading">
+            <div class="section-title chart-title">
+              <div>
+                <p class="eyebrow">RANKED PERFORMANCE</p>
+                <h2 id="chart-heading">MR 트렌드</h2>
+              </div>
+              <div class="filter-chips" role="group" aria-label="MR 차트 표시 구간">
+                <button id="chart-limit-20" class="filter-chip" type="button" aria-pressed="false">최근 20전</button>
+                <button id="chart-limit-50" class="filter-chip" type="button" aria-pressed="true">최근 50전</button>
+                <button id="chart-limit-100" class="filter-chip" type="button" aria-pressed="false">최근 100전</button>
+              </div>
+            </div>
+            <div class="chart-stage">
+              <svg id="mr-chart" class="mr-chart" viewBox="0 0 760 280" role="img" aria-labelledby="chart-heading" aria-describedby="chart-state mr-chart-tooltip-status" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="mr-area-gradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#00ffcc" stop-opacity="0.44"></stop>
+                    <stop offset="100%" stop-color="#00b8ff" stop-opacity="0"></stop>
+                  </linearGradient>
+                </defs>
+                <path id="mr-chart-area" class="chart-area" d=""></path>
+                <path id="mr-chart-line" class="chart-line" d=""></path>
+                <g id="mr-chart-points"></g>
+              </svg>
+              <div id="mr-chart-tooltip" class="chart-tooltip" role="tooltip" hidden></div>
+              <p id="chart-empty" class="chart-empty empty-state">표시할 MR 기록이 없습니다.</p>
+            </div>
+            <p id="chart-state" class="region-state" role="status" aria-live="polite">MR 기록을 불러오는 중입니다.</p>
+            <p id="mr-chart-tooltip-status" class="sr-only" role="status" aria-live="polite"></p>
+          </section>
+
+          <aside id="match-feed" class="feed-panel panel" aria-labelledby="match-feed-heading">
+            <div class="section-title">
+              <div>
+                <p class="eyebrow">BATTLE LOG</p>
+                <h2 id="match-feed-heading">실시간 대전 피드</h2>
+              </div>
+              <span class="feed-live-label">LATEST</span>
+            </div>
+            <ol id="match-feed-list" class="match-feed-list" aria-live="polite"></ol>
+            <p id="match-feed-empty" class="empty-state">아직 수집된 대전 기록이 없습니다.</p>
+            <button id="match-feed-load-more" class="secondary-button load-more" type="button" hidden>더 보기</button>
+            <p id="match-feed-state" class="region-state" role="status" aria-live="polite">대전 기록을 불러오는 중입니다.</p>
+          </aside>
+        </div>
+
+        <section class="matchup-panel panel" aria-labelledby="matchup-heading">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">OPPONENT ANALYSIS</p>
+              <h2 id="matchup-heading">상대 캐릭터별 상성</h2>
+            </div>
+            <p class="muted">최근 100번의 승패 확정 대전</p>
+          </div>
+          <div id="matchup-grid" class="matchup-grid"></div>
+          <p id="matchup-empty" class="empty-state">집계할 상대 캐릭터 전적이 없습니다.</p>
+          <p id="matchup-state" class="region-state" role="status" aria-live="polite">상성 전적을 불러오는 중입니다.</p>
+        </section>
       </section>
 
-      <section class="panel" aria-labelledby="login-heading">
-        <h2 id="login-heading">Buckler 로그인</h2>
-        <form id="login-form" novalidate>
-          <p id="login-account" class="muted">로그인 후 Buckler 프로필에서 사용자 코드를 자동으로 확인합니다.</p>
-          <button id="login-submit" type="submit" disabled>로그인 시작</button>
-        </form>
-        <p id="login-status" role="status" aria-live="polite">데스크톱 로그인 연결을 준비 중입니다.</p>
-        <p class="muted">자동 수집을 시작하면 최근 대전을 30초마다 확인합니다. 프로필은 로그인 확인이 필요할 때만 수집합니다.</p>
-        <div class="collection-action">
-          <button id="auto-collection-toggle" type="button" disabled>전적 수집 시작</button>
-          <p id="auto-collection-status" role="status" aria-live="polite">자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.</p>
-        </div>
-        <div class="collection-action">
-          <button id="matches-collect" type="button" disabled>최근 대전 수집</button>
-          <p id="matches-collect-status" role="status" aria-live="polite">자동 갱신을 기다리지 않고 지금 수집할 때 사용하세요.</p>
-        </div>
-        <div class="collection-action">
-          <button id="matches-reset" type="button" disabled>전적 초기화</button>
-          <p id="matches-reset-status" role="status" aria-live="polite">전적만 초기화하며 로그인과 프로필은 유지합니다.</p>
-        </div>
-        <div class="collection-action">
-          <button id="legacy-quarantine-clear" type="button" disabled>이전 검토 대기 정리</button>
-          <p id="legacy-quarantine-status" role="status" aria-live="polite">이전 마이그레이션과 구형 대전 파서의 실패 기록만 제외하고 원본은 보존합니다.</p>
-        </div>
-      </section>
+      <section id="panel-manage" class="tab-panel" role="tabpanel" aria-labelledby="tab-manage" tabindex="0" hidden>
+        <section id="page-state" class="notice" aria-live="polite">
+          데이터를 안전하게 불러오는 중입니다.
+        </section>
 
-      <section class="panel" aria-labelledby="obs-heading">
-        <h2 id="obs-heading">OBS 브라우저 소스</h2>
-        <label for="obs-url">브라우저 소스 URL</label>
-        <div class="copy-row">
-          <input id="obs-url" type="text" readonly aria-describedby="obs-help obs-status">
-          <button id="obs-copy" type="button">복사</button>
-        </div>
-        <p id="obs-help" class="muted">OBS 브라우저 소스를 1400×180으로 설정한 뒤 URL을 붙여 넣으세요. 주소는 127.0.0.1:8000으로 고정됩니다.</p>
-        <p id="obs-status" role="status" aria-live="polite"></p>
-      </section>
+        <section class="panel" aria-labelledby="login-heading">
+          <h2 id="login-heading">Buckler 로그인</h2>
+          <form id="login-form" novalidate>
+            <p id="login-account" class="muted">로그인 후 Buckler 프로필에서 사용자 코드를 자동으로 확인합니다.</p>
+            <button id="login-submit" type="submit" disabled>로그인 시작</button>
+          </form>
+          <p id="login-status" role="status" aria-live="polite">데스크톱 로그인 연결을 준비 중입니다.</p>
+          <p class="muted">자동 수집을 시작하면 최근 대전을 30초마다 확인합니다. 프로필은 로그인 확인이 필요할 때만 수집합니다.</p>
+          <div class="collection-action">
+            <button id="auto-collection-toggle" type="button" disabled>전적 수집 시작</button>
+            <p id="auto-collection-status" role="status" aria-live="polite">자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.</p>
+          </div>
+          <div class="collection-action">
+            <button id="matches-collect" type="button" disabled>최근 대전 수집</button>
+            <p id="matches-collect-status" role="status" aria-live="polite">자동 갱신을 기다리지 않고 지금 수집할 때 사용하세요.</p>
+          </div>
+          <div class="collection-action">
+            <button id="matches-reset" type="button" disabled>전적 초기화</button>
+            <p id="matches-reset-status" role="status" aria-live="polite">전적만 초기화하며 로그인과 프로필은 유지합니다.</p>
+          </div>
+          <div class="collection-action">
+            <button id="legacy-quarantine-clear" type="button" disabled>이전 검토 대기 정리</button>
+            <p id="legacy-quarantine-status" role="status" aria-live="polite">이전 마이그레이션과 구형 대전 파서의 실패 기록만 제외하고 원본은 보존합니다.</p>
+          </div>
+        </section>
 
-      <section class="summary-grid" aria-label="시스템 현황">
-        <article class="summary-card"><span>대전 기록</span><strong id="match-count">—</strong></article>
-        <article class="summary-card"><span>프로필 스냅샷</span><strong id="profile-count">—</strong></article>
-        <article class="summary-card"><span>진행 중 작업</span><strong id="running-job-count">—</strong></article>
-        <article class="summary-card"><span>검토 대기</span><strong id="quarantine-count">—</strong></article>
-      </section>
+        <section class="panel" aria-labelledby="obs-heading">
+          <h2 id="obs-heading">OBS 브라우저 소스</h2>
+          <div class="obs-options">
+            <label for="obs-delta-mode">
+              MR 변동 기준
+              <select id="obs-delta-mode">
+                <option value="session" selected>앱 세션</option>
+                <option value="range">표시 구간</option>
+              </select>
+            </label>
+            <label for="obs-chart-limit">
+              차트 표시 구간
+              <select id="obs-chart-limit">
+                <option value="20">최근 20전</option>
+                <option value="50" selected>최근 50전</option>
+                <option value="100">최근 100전</option>
+              </select>
+            </label>
+          </div>
+          <label for="obs-url">브라우저 소스 URL</label>
+          <div class="copy-row">
+            <input id="obs-url" type="text" readonly aria-describedby="obs-help obs-status">
+            <button id="obs-copy" type="button">복사</button>
+          </div>
+          <p id="obs-help" class="muted">위 옵션은 복사할 OBS URL에만 적용되며 인앱 뷰어 설정은 바꾸지 않습니다. OBS 브라우저 소스를 1400×180으로 설정한 뒤 URL을 붙여 넣으세요. 주소는 127.0.0.1:8000으로 고정됩니다.</p>
+          <p id="obs-status" role="status" aria-live="polite"></p>
+        </section>
 
-      <section class="content-grid" aria-label="최근 수집 결과">
-        <article class="panel">
-          <h2>내 프로필</h2>
-          <dl id="profile-detail" class="details"></dl>
-          <p id="profile-empty" class="empty-state">아직 프로필 스냅샷이 없습니다.</p>
-        </article>
-        <article class="panel">
-          <h2>최근 대전</h2>
-          <dl id="match-detail" class="details"></dl>
-          <p id="match-empty" class="empty-state">아직 수집된 대전 기록이 없습니다.</p>
-        </article>
-        <article class="panel">
-          <h2>최근 작업</h2>
-          <dl id="job-detail" class="details"></dl>
-          <p id="job-empty" class="empty-state">등록된 작업이 없습니다.</p>
-        </article>
-        <article class="panel">
-          <h2>격리 항목</h2>
-          <ul id="quarantine-list" class="compact-list" aria-live="polite"></ul>
-          <p id="quarantine-empty" class="empty-state">검토가 필요한 항목이 없습니다.</p>
-        </article>
-      </section>
+        <section class="summary-grid" aria-label="시스템 현황">
+          <article class="summary-card"><span>대전 기록</span><strong id="match-count">—</strong></article>
+          <article class="summary-card"><span>프로필 스냅샷</span><strong id="profile-count">—</strong></article>
+          <article class="summary-card"><span>진행 중 작업</span><strong id="running-job-count">—</strong></article>
+          <article class="summary-card"><span>검토 대기</span><strong id="quarantine-count">—</strong></article>
+        </section>
 
-      <section class="panel table-panel">
-        <div class="section-title">
-          <h2>최근 수집 실행</h2>
-          <span id="last-refresh" class="muted">갱신 대기 중</span>
-        </div>
-        <div class="table-wrap" tabindex="0">
-          <table>
-            <caption class="sr-only">최근 수집 실행 상태</caption>
-            <thead><tr><th scope="col">상태</th><th scope="col">원본</th><th scope="col">정규화</th><th scope="col">중복</th><th scope="col">격리</th></tr></thead>
-            <tbody id="ingestion-rows"></tbody>
-          </table>
-        </div>
-        <p id="ingestion-empty" class="empty-state">수집 실행 이력이 없습니다.</p>
+        <section class="content-grid" aria-label="최근 수집 결과">
+          <article class="panel">
+            <h2>내 프로필</h2>
+            <dl id="profile-detail" class="details"></dl>
+            <p id="profile-empty" class="empty-state">아직 프로필 스냅샷이 없습니다.</p>
+          </article>
+          <article class="panel">
+            <h2>최근 대전</h2>
+            <dl id="match-detail" class="details"></dl>
+            <p id="match-empty" class="empty-state">아직 수집된 대전 기록이 없습니다.</p>
+          </article>
+          <article class="panel">
+            <h2>최근 작업</h2>
+            <dl id="job-detail" class="details"></dl>
+            <p id="job-empty" class="empty-state">등록된 작업이 없습니다.</p>
+          </article>
+          <article class="panel">
+            <h2>격리 항목</h2>
+            <ul id="quarantine-list" class="compact-list" aria-live="polite"></ul>
+            <p id="quarantine-empty" class="empty-state">검토가 필요한 항목이 없습니다.</p>
+          </article>
+        </section>
+
+        <section class="panel table-panel">
+          <div class="section-title">
+            <h2>최근 수집 실행</h2>
+            <span id="last-refresh" class="muted">갱신 대기 중</span>
+          </div>
+          <div class="table-wrap" tabindex="0">
+            <table>
+              <caption class="sr-only">최근 수집 실행 상태</caption>
+              <thead><tr><th scope="col">상태</th><th scope="col">원본</th><th scope="col">정규화</th><th scope="col">중복</th><th scope="col">격리</th></tr></thead>
+              <tbody id="ingestion-rows"></tbody>
+            </table>
+          </div>
+          <p id="ingestion-empty" class="empty-state">수집 실행 이력이 없습니다.</p>
+        </section>
       </section>
     </main>
   </body>
