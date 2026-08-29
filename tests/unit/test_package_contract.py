@@ -4,7 +4,7 @@ from pathlib import Path
 def test_release_version_is_consistent_across_package_and_exe_metadata() -> None:
     import sf6viewer
 
-    assert sf6viewer.__version__ == "2.3.0"
+    assert sf6viewer.__version__ == "2.4.0"
 
     version_info = (Path(__file__).parents[2] / "packaging" / "version_info.txt").read_text(
         encoding="utf-8"

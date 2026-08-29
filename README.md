@@ -1,10 +1,10 @@
-# SF6Viewer V2.3.0
+# SF6Viewer V2.4.0
 
 Street Fighter 6의 Buckler 프로필과 최근 대전 기록을 로컬에 수집하고, 방송 중 OBS에 실시간 전적을 표시하는 Windows 데스크톱 앱입니다.
 
 V2는 안정성과 데이터 정확성을 우선하여 새 구조로 마이그레이션했습니다. 원본 응답을 먼저 보존한 뒤 검증된 데이터만 화면에 반영하며, 로그인 정보와 전적 데이터는 사용자 PC에만 저장합니다.
 
-현재 정식 버전은 [SF6Viewer v2.3.0](https://github.com/blacknabis/SF6RankViewer/releases/tag/v2.3.0)입니다.
+현재 버전은 SF6Viewer v2.4.0입니다.
 
 ## 주요 기능
 
