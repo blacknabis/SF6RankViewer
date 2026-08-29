@@ -14,8 +14,9 @@ from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import Session, aliased
+from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
 
 from sf6viewer import __version__
@@ -95,6 +96,7 @@ class MatchResponse(ApiModel):
     opponent_mr: int | None
     opponent_lp: int | None
     result: MatchResult
+    mr_delta: int | None = None
 
 
 class ProfileSnapshotResponse(ApiModel):
@@ -257,7 +259,14 @@ def _page_metadata(total: int | None, page: int, page_size: int) -> PageMetadata
     return PageMetadata(page=page, page_size=page_size, total=int(total or 0))
 
 
-def _match_response(model: MatchModel) -> MatchResponse:
+def _match_response(
+    model: MatchModel, *, previous_mr: int | None = None
+) -> MatchResponse:
+    mr_delta = (
+        model.my_mr - previous_mr
+        if isinstance(model.my_mr, int) and isinstance(previous_mr, int)
+        else None
+    )
     return MatchResponse(
         id=model.id,
         occurred_at_ms=model.occurred_at_ms,
@@ -270,6 +279,45 @@ def _match_response(model: MatchModel) -> MatchResponse:
         opponent_mr=model.opponent_mr,
         opponent_lp=model.opponent_lp,
         result=cast(MatchResult, model.result),
+        mr_delta=mr_delta,
+    )
+
+
+def _matches_with_previous_mr(
+    reset_at_ms: int,
+) -> Select[tuple[MatchModel, int | None]]:
+    """Select visible matches with the prior known MR for the same character."""
+
+    current_match = aliased(MatchModel, name="current_match")
+    previous_match = aliased(MatchModel, name="previous_match")
+    previous_mr = (
+        select(previous_match.my_mr)
+        .where(
+            previous_match.account_id == current_match.account_id,
+            previous_match.my_character == current_match.my_character,
+            previous_match.my_mr.is_not(None),
+            previous_match.occurred_at_ms > reset_at_ms,
+            or_(
+                previous_match.occurred_at_ms < current_match.occurred_at_ms,
+                and_(
+                    previous_match.occurred_at_ms == current_match.occurred_at_ms,
+                    previous_match.id < current_match.id,
+                ),
+            ),
+        )
+        .order_by(previous_match.occurred_at_ms.desc(), previous_match.id.desc())
+        .limit(1)
+        .correlate(current_match)
+        .scalar_subquery()
+        .label("previous_mr")
+    )
+    return (
+        select(current_match, previous_mr)
+        .where(
+            current_match.account_id == 1,
+            current_match.occurred_at_ms > reset_at_ms,
+        )
+        .order_by(current_match.occurred_at_ms.desc(), current_match.id.desc())
     )
 
 
@@ -472,16 +520,15 @@ def create_read_api(
         """List canonical matches, newest first, with deterministic tie-breaking."""
 
         reset_at_ms = _match_reset_at_ms(session)
-        statement = (
-            select(MatchModel)
-            .where(MatchModel.account_id == 1, MatchModel.occurred_at_ms > reset_at_ms)
-            .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
-        )
-        records = session.scalars(
+        statement = _matches_with_previous_mr(reset_at_ms)
+        records = session.execute(
             statement.limit(page_size).offset((page - 1) * page_size)
         ).all()
         return MatchPage(
-            items=tuple(_match_response(record) for record in records),
+            items=tuple(
+                _match_response(record, previous_mr=previous_mr)
+                for record, previous_mr in records
+            ),
             page=_page_metadata(
                 session.scalar(
                     select(func.count())
@@ -605,11 +652,11 @@ def create_read_api(
         )
         recent_limit = 100
         reset_at_ms = _match_reset_at_ms(session)
-        latest_match = session.scalar(
-            select(MatchModel)
-            .where(MatchModel.account_id == 1, MatchModel.occurred_at_ms > reset_at_ms)
-            .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
-            .limit(1)
+        latest_match_row = session.execute(
+            _matches_with_previous_mr(reset_at_ms).limit(1)
+        ).one_or_none()
+        latest_match, latest_match_previous_mr = (
+            latest_match_row if latest_match_row is not None else (None, None)
         )
         active_character = _resolve_active_character(latest_match, latest_profile)
         char_filter = (
@@ -669,7 +716,11 @@ def create_read_api(
                 active_character=active_character,
                 latest_character_match=recent_matches[0] if recent_matches else None,
             ),
-            latest_match=_match_response(latest_match) if latest_match is not None else None,
+            latest_match=(
+                _match_response(latest_match, previous_mr=latest_match_previous_mr)
+                if latest_match is not None
+                else None
+            ),
             latest_job=_job_response(latest_job) if latest_job is not None else None,
             statistics=ObsStatistics(
                 recent_limit=recent_limit,
