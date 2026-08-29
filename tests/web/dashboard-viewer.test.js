@@ -20,6 +20,7 @@ class FakeNode {
     this.className = "";
     this.listeners = new Map();
     this._text = "";
+    this.textWrites = 0;
     this.innerHtmlWrites = 0;
   }
 
@@ -30,6 +31,7 @@ class FakeNode {
     for (const child of this.children) child.parentNode = null;
     this.children = [];
     this._text = String(value);
+    this.textWrites += 1;
   }
   set innerHTML(_) { this.innerHtmlWrites += 1; }
 
@@ -194,4 +196,24 @@ test("bindInteractions forwards delta, chart, and feed actions once", () => {
   document.getElementById("chart-limit-100").dispatch("click");
   document.getElementById("match-feed-load-more").dispatch("click");
   assert.deepEqual(calls, [["delta", "range"], ["limit", 100], ["more"]]);
+});
+
+test("unchanged feed polling does not repeat the aria-live state announcement", () => {
+  const document = new FakeDocument([
+    "match-feed-list", "match-feed-empty", "match-feed-load-more", "match-feed-state"
+  ]);
+  const viewer = viewerBoundary.create({ document, metrics });
+  const state = {
+    items: [{
+      id: "stable", occurred_at_ms: Date.now(), result: "WIN", my_character: "Juri",
+      opponent_character: "Ken", opponent_name: "Rival", opponent_mr: 1500, mr_delta: 1
+    }],
+    nextPage: 2, total: 2, exhausted: false, inFlight: false
+  };
+  viewer.renderFeed(state);
+  const liveState = document.getElementById("match-feed-state");
+  const writes = liveState.textWrites;
+  viewer.renderFeed(state);
+  assert.equal(liveState.textWrites, writes);
+  assert.equal(liveState.textContent, "1건 표시 중");
 });

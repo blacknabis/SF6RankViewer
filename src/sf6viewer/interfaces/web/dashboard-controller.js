@@ -174,6 +174,41 @@
     };
   }
 
+  function invalidateResetSensitiveState(state) {
+    const invalidated = invalidateFeedState(state);
+    return {
+      ...invalidated,
+      regions: {
+        ...(invalidated.regions || {}),
+        obs: { value: null, stale: true },
+        feed: { value: null, stale: true },
+        manageMatches: { value: { items: [] }, stale: true },
+        system: { value: null, stale: true }
+      }
+    };
+  }
+
+  function commitRefreshedRegions({ state, refreshed, generation } = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    const incoming = refreshed && refreshed.regions && typeof refreshed.regions === "object"
+      ? refreshed.regions
+      : {};
+    if (isFeedGenerationCurrent(source, generation)) {
+      return { ...source, regions: incoming };
+    }
+    const current = source.regions && typeof source.regions === "object" ? source.regions : {};
+    return {
+      ...source,
+      regions: {
+        ...incoming,
+        obs: current.obs,
+        feed: current.feed,
+        manageMatches: current.manageMatches,
+        system: current.system
+      }
+    };
+  }
+
   function commitFeedState({ state, generation, feed } = {}) {
     const source = state && typeof state === "object" ? state : {};
     if (!isFeedGenerationCurrent(source, generation)) return source;
@@ -357,12 +392,14 @@
     applyRestoredPreference,
     applyViewerPreference,
     commitFeedState,
+    commitRefreshedRegions,
     createPreferenceWriteQueue,
     createRevisionGuard,
     createSingleFlight,
     feedGeneration,
     hasAdvancedResetBoundary,
     invalidateFeedState,
+    invalidateResetSensitiveState,
     isFeedGenerationCurrent,
     liveRecordingPresentation,
     loadNextFeed,

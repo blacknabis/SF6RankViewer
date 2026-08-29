@@ -484,6 +484,53 @@ test("timed regions settle independently and single-flight native requests are r
   resolveNative({ ok: true });
 });
 
+test("reset invalidation rejects old region completions and failed refresh keeps sensitive caches empty", async () => {
+  let resolveOldObs;
+  let resolveOldSystem;
+  let state = {
+    feedGeneration: 0,
+    feed: {
+      items: [{ id: "old-match", occurred_at_ms: 10 }], nextPage: 2,
+      total: 1, exhausted: true, inFlight: false
+    },
+    regions: {
+      obs: { value: { statistics: { total: { wins: 99, losses: 1 } } }, stale: false },
+      feed: { value: { items: [{ id: "old-match" }] }, stale: false },
+      manageMatches: { value: { items: [{ id: "old-match" }] }, stale: false },
+      system: { value: { match_count: 100 }, stale: false }
+    }
+  };
+  const oldGeneration = controller.feedGeneration(state);
+  const oldRefresh = controller.refreshRegions({
+    obs: new Promise((resolve) => { resolveOldObs = resolve; }),
+    system: new Promise((resolve) => { resolveOldSystem = resolve; })
+  }, state);
+
+  state = controller.invalidateResetSensitiveState(state);
+  resolveOldObs({ statistics: { total: { wins: 100, losses: 1 } } });
+  resolveOldSystem({ match_count: 101 });
+  const oldResult = await oldRefresh;
+  state = controller.commitRefreshedRegions({
+    state, refreshed: oldResult, generation: oldGeneration
+  });
+  assert.deepEqual(state.feed.items, []);
+  assert.deepEqual(state.regions.obs, { value: null, stale: true });
+  assert.deepEqual(state.regions.system, { value: null, stale: true });
+  assert.deepEqual(state.regions.manageMatches, { value: { items: [] }, stale: true });
+
+  const currentGeneration = controller.feedGeneration(state);
+  const failed = await controller.refreshRegions({
+    obs: Promise.reject(new Error("post-reset obs failed")),
+    system: Promise.reject(new Error("post-reset system failed"))
+  }, state);
+  state = controller.commitRefreshedRegions({
+    state, refreshed: failed, generation: currentGeneration
+  });
+  assert.deepEqual(state.feed.items, []);
+  assert.deepEqual(state.regions.obs, { value: null, stale: true });
+  assert.deepEqual(state.regions.system, { value: null, stale: true });
+});
+
 test("applyObsOptions renders the exact fixed loopback URL without persistence", () => {
   let renderedUrl = null;
 

@@ -21,7 +21,7 @@
 
     function setText(id, value) {
       const node = element(id);
-      if (node) node.textContent = value;
+      if (node && node.textContent !== value) node.textContent = value;
     }
 
     function formatDate(value) {

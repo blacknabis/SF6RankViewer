@@ -428,16 +428,11 @@ async function clearMatches() {
         ? "자동 수집이 다음 주기에 최신 전적을 확인합니다."
         : "자동 수집이 중지되어 있습니다. 필요하면 전적 수집 시작 또는 최근 대전 수집을 선택하세요.";
       setMatchResetStatus(`전적 ${number(result.cleared)}건을 초기화했습니다. ${followUp}`);
-      dashboardState = controllerAdapter.invalidateFeedState(dashboardState);
-      dashboardState = {
-        ...dashboardState,
-        regions: {
-          ...dashboardState.regions,
-          manageMatches: { value: { items: [] }, stale: false }
-        }
-      };
+      dashboardState = controllerAdapter.invalidateResetSensitiveState(dashboardState);
       dashboardViewer.renderFeed(dashboardState.feed);
       renderMatch(null);
+      renderViewerAggregate();
+      renderManagementRegions();
       await refresh();
     } else {
       setMatchResetStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
@@ -637,6 +632,12 @@ function renderManagementRegions() {
     byId("profile-count").textContent = number(system.profile_snapshot_count);
     byId("running-job-count").textContent = number(system.running_job_count);
     byId("quarantine-count").textContent = number(system.open_quarantine_count);
+  } else {
+    byId("app-version").textContent = "버전 정보 없음";
+    byId("match-count").textContent = "—";
+    byId("profile-count").textContent = "—";
+    byId("running-job-count").textContent = "—";
+    byId("quarantine-count").textContent = "—";
   }
   const profiles = regions.profiles && regions.profiles.value;
   const matches = regions.manageMatches && regions.manageMatches.value;
@@ -764,17 +765,11 @@ async function refresh() {
     }, dashboardState);
     // Preferences and feed paging can change while the settled refresh is in
     // progress. Only the independently refreshed regions are replaced here.
-    const generationStillCurrent = controllerAdapter.isFeedGenerationCurrent(
-      dashboardState, refreshFeedGeneration
-    );
-    const regions = generationStillCurrent
-      ? refreshed.regions
-      : {
-        ...refreshed.regions,
-        feed: dashboardState.regions.feed,
-        manageMatches: dashboardState.regions.manageMatches
-      };
-    dashboardState = { ...dashboardState, regions };
+    dashboardState = controllerAdapter.commitRefreshedRegions({
+      state: dashboardState,
+      refreshed,
+      generation: refreshFeedGeneration
+    });
 
     const feedRegion = dashboardState.regions.feed;
     const aggregate = dashboardState.regions.obs;
@@ -792,9 +787,14 @@ async function refresh() {
       });
     }
     dashboardViewer.renderFeed(dashboardState.feed);
-    dashboardViewer.setRegionState("feed", feedRegion && feedRegion.stale
-      ? { stale: true, message: "대전 피드 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다." }
-      : { stale: false, message: dashboardState.feed.exhausted ? "모든 대전 기록을 표시했습니다." : `${dashboardState.feed.items.length}건 표시 중` });
+    if (feedRegion && feedRegion.stale) {
+      dashboardViewer.setRegionState("feed", {
+        stale: true,
+        message: dashboardState.feed.items.length
+          ? "대전 피드 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다."
+          : "대전 피드를 불러오지 못했습니다. 잠시 후 다시 시도합니다."
+      });
+    }
 
     const autoRegion = dashboardState.regions.auto;
     const autoResult = autoRegion && !autoRegion.stale ? autoRegion.value : null;
