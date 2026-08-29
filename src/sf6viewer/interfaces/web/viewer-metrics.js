@@ -2,8 +2,11 @@
 
 (function exposeViewerMetrics(root, factory) {
   const api = Object.freeze(factory());
-  if (typeof module === "object" && module.exports) module.exports = api;
-  if (root) root.SF6ViewerMetrics = api;
+  if (typeof module === "object" && module.exports) {
+    module.exports = api;
+  } else if (root) {
+    root.SF6ViewerMetrics = api;
+  }
 })(typeof globalThis === "object" ? globalThis : this, function createViewerMetrics() {
   const SUPPORTED_LIMITS = Object.freeze([20, 50, 100]);
   const DEFAULT_OPTIONS = Object.freeze({ deltaMode: "session", chartLimit: 50 });

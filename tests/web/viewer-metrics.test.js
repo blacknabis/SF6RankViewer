@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 
 const metrics = require("../../src/sf6viewer/interfaces/web/viewer-metrics.js");
 
@@ -75,6 +78,18 @@ test("relativeTimeKo formats hours, yesterday, and older days", () => {
   assert.equal(metrics.relativeTimeKo(null, now), "—");
 });
 
+test("relativeTimeKo switches buckets at exact minute, hour, yesterday, and day boundaries", () => {
+  const now = Date.UTC(2026, 7, 29, 12, 0, 0);
+  assert.equal(metrics.relativeTimeKo(now - 59_999, now), "방금 전");
+  assert.equal(metrics.relativeTimeKo(now - 60_000, now), "1분 전");
+  assert.equal(metrics.relativeTimeKo(now - 3_599_999, now), "59분 전");
+  assert.equal(metrics.relativeTimeKo(now - 3_600_000, now), "1시간 전");
+  assert.equal(metrics.relativeTimeKo(now - 86_399_999, now), "23시간 전");
+  assert.equal(metrics.relativeTimeKo(now - 86_400_000, now), "어제");
+  assert.equal(metrics.relativeTimeKo(now - 172_799_999, now), "어제");
+  assert.equal(metrics.relativeTimeKo(now - 172_800_000, now), "2일 전");
+});
+
 test("matchupTier applies the exact 45 and 55 percent boundaries", () => {
   assert.deepEqual(metrics.matchupTier(44, 56), { key: "unfavored", label: "열세", rate: 44 });
   assert.deepEqual(metrics.matchupTier(45, 55), { key: "even", label: "호각", rate: 45 });
@@ -127,4 +142,26 @@ test("OBS options are normalized independently from viewer preferences", () => {
   assert.deepEqual(obsOptions, { deltaMode: "session", chartLimit: 50 });
   assert.deepEqual(viewerPreferences, { deltaMode: "range", chartLimit: 100 });
   assert.equal(metrics.buildObsUrl(obsOptions), "http://127.0.0.1:8000/ui/obs.html?delta=session&limit=50");
+});
+
+test("CommonJS metrics export does not write the Node global", () => {
+  const modulePath = require.resolve("../../src/sf6viewer/interfaces/web/viewer-metrics.js");
+  delete require.cache[modulePath];
+  delete globalThis.SF6ViewerMetrics;
+
+  const commonJsMetrics = require(modulePath);
+
+  assert.equal(globalThis.SF6ViewerMetrics, undefined);
+  assert.equal(commonJsMetrics.winRate(3, 1), 75);
+  assert.equal(Object.isFrozen(commonJsMetrics), true);
+});
+
+test("browser UMD branch publishes the frozen metrics global", () => {
+  const modulePath = path.resolve(__dirname, "../../src/sf6viewer/interfaces/web/viewer-metrics.js");
+  const context = vm.createContext({ URLSearchParams });
+
+  vm.runInContext(fs.readFileSync(modulePath, "utf8"), context);
+
+  assert.equal(context.SF6ViewerMetrics.winRate(3, 1), 75);
+  assert.equal(Object.isFrozen(context.SF6ViewerMetrics), true);
 });

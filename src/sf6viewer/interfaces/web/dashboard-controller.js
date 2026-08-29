@@ -1,12 +1,16 @@
 "use strict";
 
 (function exposeDashboardController(root, factory) {
-  const metrics = typeof module === "object" && module.exports
+  const commonJs = typeof module === "object" && module.exports;
+  const metrics = commonJs
     ? require("./viewer-metrics.js")
     : root && root.SF6ViewerMetrics;
   const api = Object.freeze(factory(metrics));
-  if (typeof module === "object" && module.exports) module.exports = api;
-  if (root) root.SF6ViewerController = api;
+  if (commonJs) {
+    module.exports = api;
+  } else if (root) {
+    root.SF6ViewerController = api;
+  }
 })(typeof globalThis === "object" ? globalThis : this, function createDashboardController(metrics) {
   const DEFAULT_PREFERENCES = Object.freeze({ deltaMode: "session", chartLimit: 50 });
 
@@ -67,40 +71,56 @@
     };
   }
 
+  function pagePayload(response, requestedPage) {
+    if (!response || typeof response !== "object" || !Array.isArray(response.items)) {
+      throw new TypeError("invalid feed page payload");
+    }
+    const metadata = response.page;
+    if (!metadata || typeof metadata !== "object"
+        || !Number.isInteger(metadata.page) || metadata.page < 1
+        || !Number.isInteger(metadata.page_size) || metadata.page_size < 1
+        || !Number.isInteger(metadata.total) || metadata.total < 0
+        || metadata.page !== requestedPage) {
+      throw new TypeError("invalid feed page metadata");
+    }
+    return {
+      items: response.items,
+      page: metadata.page,
+      pageSize: metadata.page_size,
+      total: metadata.total
+    };
+  }
+
+  async function runTransition(transition, state) {
+    if (typeof transition === "function") await transition(state);
+  }
+
   async function loadNextFeed(fetchPage, state, transition) {
     const current = cloneFeedState(state);
     if (current.inFlight || current.exhausted) return current;
 
     const pending = { ...current, items: current.items.slice(), inFlight: true };
-    if (typeof transition === "function") transition(pending);
     const requestedPage = pending.nextPage;
     try {
+      await runTransition(transition, pending);
       if (typeof fetchPage !== "function") throw new TypeError("fetchPage must be a function");
       const response = await fetchPage(requestedPage);
-      const received = response && Array.isArray(response.items) ? response.items : [];
-      const metadata = response && response.page && typeof response.page === "object" ? response.page : {};
+      const payload = pagePayload(response, requestedPage);
+      const received = payload.items;
       const items = metrics.mergeFeed(current.items, received);
-      const pageSize = Number.isInteger(metadata.page_size) && metadata.page_size > 0
-        ? metadata.page_size
-        : 25;
-      const total = Number.isInteger(metadata.total) && metadata.total >= 0
-        ? metadata.total
-        : current.total;
       const next = {
         items,
-        nextPage: Number.isInteger(metadata.page) && metadata.page >= 1
-          ? metadata.page + 1
-          : requestedPage + 1,
-        total,
+        nextPage: payload.page + 1,
+        total: payload.total,
         exhausted: metrics.isFeedExhausted({
           uniqueCount: items.length,
-          total,
+          total: payload.total,
           receivedCount: received.length,
-          pageSize
+          pageSize: payload.pageSize
         }),
         inFlight: false
       };
-      if (typeof transition === "function") transition(next);
+      await runTransition(transition, next);
       return next;
     } catch (error) {
       const recoveredState = {
@@ -108,7 +128,11 @@
         items: pending.items.slice(),
         inFlight: false
       };
-      if (typeof transition === "function") transition(recoveredState);
+      try {
+        await runTransition(transition, recoveredState);
+      } catch (_) {
+        // Preserve the original failure while guaranteeing recovered state for callers.
+      }
       const recoveredError = new Error(errorMessage(error));
       recoveredError.state = recoveredState;
       throw recoveredError;

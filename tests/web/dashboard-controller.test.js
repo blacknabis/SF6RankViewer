@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 
 const controller = require("../../src/sf6viewer/interfaces/web/dashboard-controller.js");
 
@@ -70,7 +73,6 @@ test("loadNextFeed merges a page and always clears inFlight on success", async (
     return pageResponse;
   }, state, (transition) => { transitions.push(transition); });
 
-  assert.equal(pageSeen, 2);
   assert.equal(transitions[0].inFlight, true);
   resolvePage({
     items: [{ id: "b", occurred_at_ms: 20 }, { id: "a", occurred_at_ms: 10 }],
@@ -78,6 +80,7 @@ test("loadNextFeed merges a page and always clears inFlight on success", async (
   });
   const next = await operation;
 
+  assert.equal(pageSeen, 2);
   assert.deepEqual(next.items.map((item) => item.id), ["b", "a"]);
   assert.equal(next.nextPage, 3);
   assert.equal(next.exhausted, false);
@@ -106,6 +109,110 @@ test("loadNextFeed throws with recovered immutable state after rejection", async
   assert.equal(state.inFlight, false);
 });
 
+test("loadNextFeed recovers when the pending transition throws synchronously", async () => {
+  const state = {
+    items: [{ id: "a", occurred_at_ms: 10 }], nextPage: 2,
+    total: 100, exhausted: false, inFlight: false
+  };
+  const transitions = [];
+
+  await assert.rejects(
+    controller.loadNextFeed(async () => assert.fail("fetch must not run"), state, (next) => {
+      transitions.push(next);
+      if (next.inFlight) throw new Error("sync render failed");
+    }),
+    (error) => {
+      assert.equal(error.message, "sync render failed");
+      assert.deepEqual(error.state, state);
+      return true;
+    }
+  );
+  assert.deepEqual(transitions.map((next) => next.inFlight), [true, false]);
+});
+
+test("loadNextFeed awaits async transitions and recovers when completion rendering rejects", async () => {
+  const state = {
+    items: [{ id: "a", occurred_at_ms: 10 }], nextPage: 2,
+    total: 2, exhausted: false, inFlight: false
+  };
+  const transitions = [];
+
+  await assert.rejects(
+    controller.loadNextFeed(async () => ({
+      items: [{ id: "b", occurred_at_ms: 20 }],
+      page: { page: 2, page_size: 1, total: 2 }
+    }), state, async (next) => {
+      transitions.push(next);
+      if (!next.inFlight) {
+        throw new Error("async render failed");
+      }
+    }),
+    (error) => {
+      assert.equal(error.message, "async render failed");
+      assert.deepEqual(error.state, state);
+      return true;
+    }
+  );
+  assert.deepEqual(transitions.map((next) => next.inFlight), [true, false, false]);
+});
+
+test("loadNextFeed rejects malformed page payloads without advancing state", async () => {
+  const state = {
+    items: [{ id: "a", occurred_at_ms: 10 }], nextPage: 2,
+    total: 100, exhausted: false, inFlight: false
+  };
+  const malformedPayloads = [
+    null,
+    { items: {}, page: { page: 2, page_size: 25, total: 100 } },
+    { items: [], page: null },
+    { items: [], page: { page: "2", page_size: 25, total: 100 } },
+    { items: [], page: { page: 2, page_size: 0, total: 100 } },
+    { items: [], page: { page: 2, page_size: 25, total: -1 } }
+  ];
+
+  for (const payload of malformedPayloads) {
+    await assert.rejects(
+      controller.loadNextFeed(async () => payload, state),
+      (error) => {
+        assert.deepEqual(error.state, state);
+        return true;
+      }
+    );
+  }
+});
+
+test("loadNextFeed rejects a mismatched response page without exhausting or advancing", async () => {
+  const state = {
+    items: [{ id: "a", occurred_at_ms: 10 }], nextPage: 2,
+    total: 100, exhausted: false, inFlight: false
+  };
+  await assert.rejects(
+    controller.loadNextFeed(async () => ({
+      items: [], page: { page: 3, page_size: 25, total: 100 }
+    }), state),
+    (error) => {
+      assert.deepEqual(error.state, state);
+      assert.equal(error.state.nextPage, 2);
+      assert.equal(error.state.exhausted, false);
+      return true;
+    }
+  );
+});
+
+test("loadNextFeed skips fetch and transition for in-flight or exhausted state", async () => {
+  let calls = 0;
+  const fetchPage = async () => { calls += 1; };
+  const transition = () => { calls += 1; };
+  const base = { items: [], nextPage: 4, total: 75, exhausted: false, inFlight: false };
+
+  const inFlight = await controller.loadNextFeed(fetchPage, { ...base, inFlight: true }, transition);
+  const exhausted = await controller.loadNextFeed(fetchPage, { ...base, exhausted: true }, transition);
+
+  assert.equal(calls, 0);
+  assert.deepEqual(inFlight, { ...base, inFlight: true });
+  assert.deepEqual(exhausted, { ...base, exhausted: true });
+});
+
 test("normalizeBridgePreferences accepts strict safe values and otherwise uses defaults", () => {
   assert.deepEqual(controller.normalizeBridgePreferences({ ok: true, delta_mode: "range", chart_limit: 100 }), {
     deltaMode: "range", chartLimit: 100
@@ -121,4 +228,26 @@ test("normalizeBridgePreferences accepts strict safe values and otherwise uses d
       deltaMode: "session", chartLimit: 50
     });
   }
+});
+
+test("CommonJS controller export does not write the Node global", () => {
+  const modulePath = require.resolve("../../src/sf6viewer/interfaces/web/dashboard-controller.js");
+  delete require.cache[modulePath];
+  delete globalThis.SF6ViewerController;
+
+  const commonJsController = require(modulePath);
+
+  assert.equal(globalThis.SF6ViewerController, undefined);
+  assert.equal(commonJsController.normalizeTabHash("#manage"), "#manage");
+  assert.equal(Object.isFrozen(commonJsController), true);
+});
+
+test("browser UMD branch publishes the frozen controller global", () => {
+  const webRoot = path.resolve(__dirname, "../../src/sf6viewer/interfaces/web");
+  const context = vm.createContext({ URLSearchParams });
+  vm.runInContext(fs.readFileSync(path.join(webRoot, "viewer-metrics.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(webRoot, "dashboard-controller.js"), "utf8"), context);
+
+  assert.equal(typeof context.SF6ViewerController.normalizeTabHash, "function");
+  assert.equal(Object.isFrozen(context.SF6ViewerController), true);
 });
