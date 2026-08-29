@@ -22,6 +22,9 @@ _FAKE_BRIDGE_SCRIPT = r"""
   const holdCounts = new Map();
   const pending = new Map();
   const clone = (value) => JSON.parse(JSON.stringify(value));
+  for (const method of new URLSearchParams(window.location.search).getAll("bridge_hold")) {
+    holdCounts.set(method, (holdCounts.get(method) || 0) + 1);
+  }
 
   function invoke(name, args, result) {
     calls.push({ name, args: clone(args) });
@@ -34,7 +37,8 @@ _FAKE_BRIDGE_SCRIPT = r"""
         pending.set(name, queue);
       });
     }
-    return Promise.resolve(typeof result === "function" ? result(...args) : clone(result));
+    const resolved = typeof result === "function" ? result(...args) : result;
+    return Promise.resolve(resolved === undefined ? undefined : clone(resolved));
   }
 
   const controls = {
@@ -56,6 +60,12 @@ _FAKE_BRIDGE_SCRIPT = r"""
 
   window.__bridgeTest = controls;
   window.confirm = () => true;
+  Object.defineProperty(window.navigator, "clipboard", {
+    configurable: true,
+    value: {
+      writeText: (...args) => invoke("clipboard_write", args, undefined)
+    }
+  });
   window.pywebview = {
     api: {
       auth_status: (...args) => invoke("auth_status", args, {
@@ -219,6 +229,74 @@ def _exercise_tabs(
     hash_page.close()
 
 
+def _exercise_bridge_status_promises(
+    context: BrowserContext,
+    base_url: str,
+    errors: tuple[list[str], list[str]],
+) -> None:
+    scenarios = (
+        (
+            "auth_status",
+            "#login-submit",
+            {"ok": True, "authenticated": True, "user_code": "1234567890"},
+        ),
+        (
+            "auto_collection_status",
+            "#auto-collection-toggle",
+            {"ok": True, "enabled": True, "interval_seconds": 30},
+        ),
+        (
+            "viewer_preferences",
+            "#chart-limit-20",
+            {"ok": True, "delta_mode": "range", "chart_limit": 20},
+        ),
+    )
+    for method, recovery_selector, result in scenarios:
+        status_page = _new_page(context, *errors)
+        try:
+            status_page.goto(
+                urljoin(base_url, f"/?bridge_hold={method}"),
+                wait_until="domcontentloaded",
+            )
+            status_page.wait_for_function(
+                "method => window.__bridgeTest.callsFor(method).length === 1", arg=method
+            )
+            if method == "auth_status":
+                # The non-blocking saved-session probe intentionally leaves
+                # manual login available.  Its visible account projection must
+                # stay unresolved until the held probe settles.
+                expect(status_page.locator("#login-submit")).to_be_enabled()
+                expect(status_page.locator("#login-account")).to_contain_text("로그인 후")
+            elif method == "auto_collection_status":
+                expect(status_page.locator("#auto-collection-toggle")).to_be_disabled()
+                expect(status_page.locator("#viewer-live-badge")).to_have_attribute(
+                    "data-live", "false"
+                )
+            else:
+                expect(status_page.locator("#chart-limit-50")).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                expect(status_page.locator("#viewer-delta-mode")).to_have_value("session")
+
+            _release(status_page, method, result)
+            if method == "auth_status":
+                expect(status_page.locator(recovery_selector)).to_be_enabled()
+                expect(status_page.locator("#login-account")).to_contain_text("1234567890")
+            elif method == "auto_collection_status":
+                expect(status_page.locator(recovery_selector)).to_be_enabled()
+                expect(status_page.locator("#viewer-live-badge")).to_have_attribute(
+                    "data-live", "true"
+                )
+            else:
+                expect(status_page.locator(recovery_selector)).to_have_attribute(
+                    "aria-pressed", "true"
+                )
+                expect(status_page.locator("#viewer-delta-mode")).to_have_value("range")
+                expect(status_page.locator("#mr-chart-points .chart-point")).to_have_count(20)
+        finally:
+            status_page.close()
+
+
 def _exercise_chart_and_feed(page: Page) -> None:
     expect(page.locator("#viewer-profile-name")).to_have_text("Harness Fighter")
     expect(page.locator("#kpi-session-delta")).to_have_text("▲ +45 MR")
@@ -229,14 +307,25 @@ def _exercise_chart_and_feed(page: Page) -> None:
     first_point.hover(force=True)
     expect(page.locator("#mr-chart-tooltip")).to_be_visible()
     expect(page.locator("#mr-chart-tooltip")).to_contain_text("History Rival")
+    first_point.dispatch_event("mouseleave")
+    expect(page.locator("#mr-chart-tooltip")).to_be_hidden()
     first_point.focus()
+    expect(page.locator("#mr-chart-tooltip")).to_be_visible()
+    expect(page.locator("#mr-chart-tooltip")).to_contain_text("History Rival")
     expect(page.locator("#mr-chart-tooltip-status")).to_contain_text("MR")
 
     _hold(page, "set_viewer_preferences")
     page.locator("#chart-limit-20").click()
     expect(page.locator("#chart-limit-20")).to_have_attribute("aria-pressed", "true")
+    # Preference persistence is deliberately optimistic and serialized: there
+    # is no blocking spinner, so the visible selected chip remains interactive
+    # while the native write is pending and after it settles.
+    expect(page.locator("#chart-limit-20")).to_be_enabled()
+    expect(page.locator("#chart-limit-20")).not_to_have_attribute("aria-busy", "true")
     expect(page.locator("#mr-chart-points .chart-point")).to_have_count(20)
     _release(page, "set_viewer_preferences", {"ok": True})
+    expect(page.locator("#chart-limit-20")).to_be_enabled()
+    expect(page.locator("#chart-limit-20")).not_to_have_attribute("aria-busy", "true")
     _assert_bridge_call(page, "set_viewer_preferences", ["session", 20])
 
     page.locator("#chart-limit-100").click()
@@ -276,6 +365,7 @@ def _exercise_manage_bridge(page: Page) -> None:
         "#matches-reset",
         "#legacy-quarantine-clear",
         "#obs-url",
+        "#obs-copy",
     ):
         expect(page.locator(selector)).to_be_visible()
 
@@ -289,6 +379,13 @@ def _exercise_manage_bridge(page: Page) -> None:
     page.locator("#obs-chart-limit").select_option("20")
     expect(page.locator("#obs-url")).to_have_value(
         "http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"
+    )
+    page.locator("#obs-copy").click()
+    expect(page.locator("#obs-status")).to_have_text("OBS 주소를 복사했습니다.")
+    _assert_bridge_call(
+        page,
+        "clipboard_write",
+        ["http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"],
     )
     expect(page.locator("#viewer-delta-mode")).to_have_value("range")
     expect(page.locator("#chart-limit-100")).to_have_attribute("aria-pressed", "true")
@@ -386,6 +483,7 @@ def _exercise_states(page: Page, base_url: str) -> None:
 
 def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
     page.locator("#tab-viewer").click()
+    expect(page.locator("#panel-viewer")).to_be_visible()
     page.set_viewport_size({"width": 1280, "height": 800})
     _assert_no_horizontal_overflow(page, "viewer 1280×800")
     _assert_no_overlap(page.locator("#kpi-total"), page.locator("#kpi-recent"), "viewer KPI cards")
@@ -405,6 +503,7 @@ def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
     page.screenshot(path=output_dir / "viewer-900x600.png")
 
     page.locator("#tab-manage").click()
+    expect(page.locator("#panel-manage")).to_be_visible()
     _assert_no_horizontal_overflow(page, "manage 900×600")
     _assert_no_overlap(
         page.locator("#login-heading").locator(".."),
@@ -461,6 +560,9 @@ def run(base_url: str, output_dir: Path) -> None:
             expect(page.locator("#connection-status")).to_have_text("로컬 서비스 연결됨")
 
             _exercise_tabs(page, base_url, context, (console_errors, page_errors))
+            _exercise_bridge_status_promises(
+                context, base_url, (console_errors, page_errors)
+            )
             _exercise_chart_and_feed(page)
             _exercise_manage_bridge(page)
             _exercise_states(page, base_url)
