@@ -24,6 +24,14 @@ class SettingsModel(Base):
             name="ck_settings_match_reset_at_ms_nonnegative",
         ),
         CheckConstraint(
+            "viewer_delta_mode IN ('session', 'range')",
+            name="ck_settings_viewer_delta_mode",
+        ),
+        CheckConstraint(
+            "viewer_chart_limit IN (20, 50, 100)",
+            name="ck_settings_viewer_chart_limit",
+        ),
+        CheckConstraint(
             "last_window_json IS NULL OR json_valid(last_window_json)",
             name="ck_settings_last_window_json",
         ),
@@ -42,4 +50,10 @@ class SettingsModel(Base):
     last_window_json: Mapped[str | None] = mapped_column(Text)
     onboarding_step: Mapped[str | None] = mapped_column(Text)
     match_reset_at_ms: Mapped[int | None] = mapped_column(Integer)
+    viewer_delta_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'session'")
+    )
+    viewer_chart_limit: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("50")
+    )
     updated_at_ms: Mapped[int | None] = mapped_column(Integer)

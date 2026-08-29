@@ -112,6 +112,7 @@ class NativeLoginBridge:
         )
         self._request_lock = Lock()
         self._auto_collection_settings_lock = Lock()
+        self._viewer_preferences_lock = Lock()
         self._request_handlers: dict[str, Callable[[str], dict[str, bool | str | int]]] = {}
         self._collection_results: dict[str, dict[str, bool | str | int]] = {}
         self._coordinator = CollectionCoordinator(self._run_collection_request)
@@ -306,6 +307,77 @@ class NativeLoginBridge:
     def set_auto_collection_controller(self, controller: Callable[[bool], None]) -> None:
         """Attach the scheduler callback after it has restored durable state."""
         self._auto_collection_controller = controller
+
+    def viewer_preferences(self) -> dict[str, bool | str | int]:
+        """Return the durable viewer display preferences using safe defaults."""
+        session: Session | None = None
+        try:
+            session = self._session_factory()
+            with self._viewer_preferences_lock:
+                settings = session.get(SettingsModel, 1)
+                if settings is None:
+                    delta_mode = "session"
+                    chart_limit = 50
+                else:
+                    delta_mode = settings.viewer_delta_mode
+                    chart_limit = int(settings.viewer_chart_limit)
+            return {
+                "ok": True,
+                "delta_mode": delta_mode,
+                "chart_limit": chart_limit,
+            }
+        except Exception:
+            if session is not None:
+                with suppress(Exception):
+                    session.rollback()
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        finally:
+            if session is not None:
+                with suppress(Exception):
+                    session.close()
+
+    def set_viewer_preferences(
+        self, delta_mode: str, chart_limit: int
+    ) -> dict[str, bool | str | int]:
+        """Validate and persist the viewer's delta mode and chart range."""
+        if type(delta_mode) is not str or delta_mode not in {"session", "range"}:
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        if type(chart_limit) is not int or chart_limit not in {20, 50, 100}:
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+        session: Session | None = None
+        try:
+            session = self._session_factory()
+            with self._viewer_preferences_lock:
+                settings = session.get(SettingsModel, 1)
+                now_ms = _now_ms()
+                if settings is None:
+                    settings = SettingsModel(
+                        id=1,
+                        viewer_delta_mode=delta_mode,
+                        viewer_chart_limit=chart_limit,
+                        updated_at_ms=now_ms,
+                    )
+                    session.add(settings)
+                else:
+                    settings.viewer_delta_mode = delta_mode
+                    settings.viewer_chart_limit = chart_limit
+                    settings.updated_at_ms = now_ms
+                session.commit()
+            return {
+                "ok": True,
+                "delta_mode": delta_mode,
+                "chart_limit": chart_limit,
+            }
+        except Exception:
+            if session is not None:
+                with suppress(Exception):
+                    session.rollback()
+            return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+        finally:
+            if session is not None:
+                with suppress(Exception):
+                    session.close()
 
     def _auto_collection_settings(self) -> tuple[bool, int]:
         """Load a fail-closed preference for a missing singleton settings row."""
