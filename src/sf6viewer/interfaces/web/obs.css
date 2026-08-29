@@ -16,6 +16,7 @@ body {
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 220px) minmax(420px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   align-items: stretch;
   gap: 15px;
   width: 100%;
@@ -24,6 +25,7 @@ body {
 .stat-card {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
   justify-content: flex-end;
   padding: 10px;
@@ -81,6 +83,7 @@ body {
 .mr-chart {
   display: flex;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   flex-direction: column;
   padding: 0 4px 0 20px;
@@ -148,6 +151,8 @@ body {
 }
 .visually-hidden {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   overflow: hidden;

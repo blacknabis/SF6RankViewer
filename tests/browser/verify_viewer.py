@@ -10,14 +10,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import urljoin
 
 from playwright.sync_api import BrowserContext, Locator, Page, expect, sync_playwright
+from viewer_harness import HARNESS_NOW_MS
 
-_FAKE_BRIDGE_SCRIPT = r"""
+FROZEN_BROWSER_NOW_MS = HARNESS_NOW_MS
+
+_FAKE_BRIDGE_SCRIPT_TEMPLATE = r"""
 (() => {
+  const NativeDate = window.Date;
+  const frozenNow = __FROZEN_BROWSER_NOW_MS__;
+  class FrozenDate extends NativeDate {
+    constructor(...args) {
+      super(...(args.length ? args : [frozenNow]));
+    }
+    static now() { return frozenNow; }
+  }
+  FrozenDate.parse = NativeDate.parse;
+  FrozenDate.UTC = NativeDate.UTC;
+  window.Date = FrozenDate;
+
   const calls = [];
   const holdCounts = new Map();
   const pending = new Map();
@@ -100,6 +116,94 @@ _FAKE_BRIDGE_SCRIPT = r"""
   };
 })();
 """
+_FAKE_BRIDGE_SCRIPT = _FAKE_BRIDGE_SCRIPT_TEMPLATE.replace(
+    "__FROZEN_BROWSER_NOW_MS__", str(FROZEN_BROWSER_NOW_MS)
+)
+
+_CAPTURE_MOTION_CSS = """
+*, *::before, *::after {
+  animation-delay: 0s !important;
+  animation-duration: 0s !important;
+  scroll-behavior: auto !important;
+  transition-delay: 0s !important;
+  transition-duration: 0s !important;
+}
+"""
+
+
+class ScreenshotCaptureContract(TypedDict):
+    full_page: bool
+    reset_scroll: bool
+    disable_animations: bool
+    landmarks: tuple[str, ...]
+
+
+_SCREENSHOT_CONTRACTS: dict[str, ScreenshotCaptureContract] = {
+    "viewer-1280x800.png": {
+        "full_page": True,
+        "reset_scroll": True,
+        "disable_animations": True,
+        "landmarks": (
+            ".app-header",
+            ".tab-navigation",
+            "#viewer-profile-banner",
+            "#chart-heading",
+            "#match-feed-heading",
+            "#matchup-heading",
+        ),
+    },
+    "viewer-900x600.png": {
+        "full_page": True,
+        "reset_scroll": True,
+        "disable_animations": True,
+        "landmarks": (
+            ".app-header",
+            ".tab-navigation",
+            "#viewer-profile-banner",
+            "#chart-heading",
+            "#match-feed-heading",
+            "#matchup-heading",
+        ),
+    },
+    "manage-900x600.png": {
+        "full_page": True,
+        "reset_scroll": True,
+        "disable_animations": True,
+        "landmarks": (
+            ".app-header",
+            ".tab-navigation",
+            "#login-heading",
+            "#obs-heading",
+            ".summary-grid",
+            ".table-panel",
+        ),
+    },
+    "obs-session-1400x180.png": {
+        "full_page": False,
+        "reset_scroll": True,
+        "disable_animations": True,
+        "landmarks": (
+            ".stats-overlay",
+            ".stat-card-total",
+            ".stat-card-recent",
+            ".mr-chart",
+        ),
+    },
+}
+
+
+def screenshot_capture_contract(name: str) -> ScreenshotCaptureContract:
+    """Return an immutable-by-copy capture contract for one required artifact."""
+
+    contract = _SCREENSHOT_CONTRACTS.get(name)
+    if contract is None:
+        raise KeyError(f"unknown required screenshot {name}")
+    return {
+        "full_page": contract["full_page"],
+        "reset_scroll": contract["reset_scroll"],
+        "disable_animations": contract["disable_animations"],
+        "landmarks": tuple(contract["landmarks"]),
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -194,9 +298,52 @@ def _calls(page: Page, method: str) -> list[list[Any]]:
     return page.evaluate("method => window.__bridgeTest.callsFor(method)", method)
 
 
-def _assert_bridge_call(page: Page, method: str, arguments: list[Any]) -> None:
-    calls = _calls(page, method)
-    _require(arguments in calls, f"{method}{arguments!r} not recorded; saw {calls!r}")
+def assert_exact_call_sequence(
+    actual: list[tuple[str, list[Any]]],
+    expected: list[tuple[str, list[Any]]],
+) -> None:
+    """Reject missing, duplicate, extra, or reordered native bridge calls."""
+
+    _require(actual == expected, f"bridge call sequence mismatch: {actual!r} != {expected!r}")
+
+
+def _assert_bridge_calls(page: Page, method: str, expected: list[list[Any]]) -> None:
+    actual_sequence = [(method, arguments) for arguments in _calls(page, method)]
+    expected_sequence = [(method, arguments) for arguments in expected]
+    assert_exact_call_sequence(actual_sequence, expected_sequence)
+
+
+def _assert_action_bridge_sequence(page: Page) -> None:
+    action_names = {
+        "set_viewer_preferences",
+        "clipboard_write",
+        "login",
+        "set_auto_collection_enabled",
+        "collect_matches",
+        "clear_matches",
+        "ignore_legacy_quarantines",
+    }
+    call_log = page.evaluate("() => window.__bridgeTest.calls")
+    actual = [
+        (entry["name"], entry["args"])
+        for entry in call_log
+        if entry["name"] in action_names
+    ]
+    expected = [
+        ("set_viewer_preferences", ["session", 20]),
+        ("set_viewer_preferences", ["session", 100]),
+        ("set_viewer_preferences", ["range", 100]),
+        (
+            "clipboard_write",
+            ["http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"],
+        ),
+        ("login", []),
+        ("set_auto_collection_enabled", [False]),
+        ("collect_matches", []),
+        ("clear_matches", []),
+        ("ignore_legacy_quarantines", []),
+    ]
+    assert_exact_call_sequence(actual, expected)
 
 
 def _exercise_tabs(
@@ -261,6 +408,7 @@ def _exercise_bridge_status_promises(
             status_page.wait_for_function(
                 "method => window.__bridgeTest.callsFor(method).length === 1", arg=method
             )
+            _assert_bridge_calls(status_page, method, [[]])
             if method == "auth_status":
                 # The non-blocking saved-session probe intentionally leaves
                 # manual login available.  Its visible account projection must
@@ -302,6 +450,9 @@ def _exercise_chart_and_feed(page: Page) -> None:
     expect(page.locator("#kpi-session-delta")).to_have_text("▲ +45 MR")
     expect(page.locator("#kpi-session-context")).to_have_text("앱 시작 기준")
     expect(page.locator("#mr-chart-points .chart-point")).to_have_count(50)
+    expect(
+        page.locator("#match-feed-list .match-card").first.locator(".match-card-meta .muted").first
+    ).to_have_text("방금 전")
 
     first_point = page.locator("#mr-chart-points .chart-point").first
     first_point.hover(force=True)
@@ -326,18 +477,26 @@ def _exercise_chart_and_feed(page: Page) -> None:
     _release(page, "set_viewer_preferences", {"ok": True})
     expect(page.locator("#chart-limit-20")).to_be_enabled()
     expect(page.locator("#chart-limit-20")).not_to_have_attribute("aria-busy", "true")
-    _assert_bridge_call(page, "set_viewer_preferences", ["session", 20])
+    _assert_bridge_calls(page, "set_viewer_preferences", [["session", 20]])
 
     page.locator("#chart-limit-100").click()
     expect(page.locator("#mr-chart-points .chart-point")).to_have_count(100)
-    _assert_bridge_call(page, "set_viewer_preferences", ["session", 100])
+    _assert_bridge_calls(
+        page,
+        "set_viewer_preferences",
+        [["session", 20], ["session", 100]],
+    )
 
     _hold(page, "set_viewer_preferences")
     page.locator("#viewer-delta-mode").select_option("range")
     expect(page.locator("#kpi-session-delta")).to_have_text("▲ +99 MR")
     expect(page.locator("#kpi-session-context")).to_have_text("표시 구간 최근 100전")
     _release(page, "set_viewer_preferences", {"ok": True})
-    _assert_bridge_call(page, "set_viewer_preferences", ["range", 100])
+    _assert_bridge_calls(
+        page,
+        "set_viewer_preferences",
+        [["session", 20], ["session", 100], ["range", 100]],
+    )
 
     expect(page.locator("#match-feed-list .match-card")).to_have_count(25)
     expect(page.locator("#match-feed-load-more")).to_be_visible()
@@ -371,9 +530,9 @@ def _exercise_manage_bridge(page: Page) -> None:
 
     expect(page.locator("#login-submit")).to_be_enabled()
     expect(page.locator("#matches-collect")).to_be_enabled()
-    _assert_bridge_call(page, "auth_status", [])
-    _assert_bridge_call(page, "auto_collection_status", [])
-    _assert_bridge_call(page, "viewer_preferences", [])
+    _assert_bridge_calls(page, "auth_status", [[]])
+    _assert_bridge_calls(page, "auto_collection_status", [[], []])
+    _assert_bridge_calls(page, "viewer_preferences", [[]])
 
     page.locator("#obs-delta-mode").select_option("range")
     page.locator("#obs-chart-limit").select_option("20")
@@ -382,10 +541,10 @@ def _exercise_manage_bridge(page: Page) -> None:
     )
     page.locator("#obs-copy").click()
     expect(page.locator("#obs-status")).to_have_text("OBS 주소를 복사했습니다.")
-    _assert_bridge_call(
+    _assert_bridge_calls(
         page,
         "clipboard_write",
-        ["http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"],
+        [["http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"]],
     )
     expect(page.locator("#viewer-delta-mode")).to_have_value("range")
     expect(page.locator("#chart-limit-100")).to_have_attribute("aria-pressed", "true")
@@ -397,7 +556,7 @@ def _exercise_manage_bridge(page: Page) -> None:
     _release(page, "login", {"ok": True, "user_code": "1234567890"})
     expect(page.locator("#login-form")).not_to_have_attribute("aria-busy", "true")
     expect(page.locator("#login-submit")).to_be_enabled()
-    _assert_bridge_call(page, "login", [])
+    _assert_bridge_calls(page, "login", [[]])
 
     _hold(page, "set_auto_collection_enabled")
     page.locator("#auto-collection-toggle").click()
@@ -410,7 +569,7 @@ def _exercise_manage_bridge(page: Page) -> None:
     )
     expect(page.locator("#auto-collection-toggle")).not_to_have_attribute("aria-busy", "true")
     expect(page.locator("#auto-collection-toggle")).to_be_enabled()
-    _assert_bridge_call(page, "set_auto_collection_enabled", [False])
+    _assert_bridge_calls(page, "set_auto_collection_enabled", [[False]])
 
     _hold(page, "collect_matches")
     page.locator("#matches-collect").click()
@@ -423,7 +582,7 @@ def _exercise_manage_bridge(page: Page) -> None:
     )
     expect(page.locator("#matches-collect")).not_to_have_attribute("aria-busy", "true")
     expect(page.locator("#matches-collect")).to_be_enabled()
-    _assert_bridge_call(page, "collect_matches", [])
+    _assert_bridge_calls(page, "collect_matches", [[]])
 
     _hold(page, "clear_matches")
     page.locator("#matches-reset").click()
@@ -432,7 +591,7 @@ def _exercise_manage_bridge(page: Page) -> None:
     _release(page, "clear_matches", {"ok": True, "cleared": 55})
     expect(page.locator("#matches-reset")).not_to_have_attribute("aria-busy", "true")
     expect(page.locator("#matches-reset")).to_be_enabled()
-    _assert_bridge_call(page, "clear_matches", [])
+    _assert_bridge_calls(page, "clear_matches", [[]])
 
     _hold(page, "ignore_legacy_quarantines")
     page.locator("#legacy-quarantine-clear").click()
@@ -441,7 +600,8 @@ def _exercise_manage_bridge(page: Page) -> None:
     _release(page, "ignore_legacy_quarantines", {"ok": True, "ignored": 1})
     expect(page.locator("#legacy-quarantine-clear")).not_to_have_attribute("aria-busy", "true")
     expect(page.locator("#legacy-quarantine-clear")).to_be_enabled()
-    _assert_bridge_call(page, "ignore_legacy_quarantines", [])
+    _assert_bridge_calls(page, "ignore_legacy_quarantines", [[]])
+    _assert_action_bridge_sequence(page)
 
 
 def _exercise_states(page: Page, base_url: str) -> None:
@@ -481,7 +641,76 @@ def _exercise_states(page: Page, base_url: str) -> None:
     expect(page.locator("#viewer-profile-name")).to_have_text("Harness Fighter")
 
 
+def _disable_capture_motion(page: Page) -> None:
+    page.add_style_tag(content=_CAPTURE_MOTION_CSS)
+    page.evaluate(
+        """async () => {
+          for (const animation of document.getAnimations()) animation.cancel();
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve))
+          );
+        }"""
+    )
+
+
+def _prepare_required_screenshot(
+    page: Page, name: str
+) -> tuple[ScreenshotCaptureContract, float]:
+    contract = screenshot_capture_contract(name)
+    if contract["disable_animations"]:
+        _disable_capture_motion(page)
+    if contract["reset_scroll"]:
+        scroll = page.evaluate(
+            """async () => {
+              window.scrollTo(0, 0);
+              await new Promise((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(resolve))
+              );
+              return { x: window.scrollX, y: window.scrollY };
+            }"""
+        )
+        _require(scroll == {"x": 0, "y": 0}, f"{name} capture did not reset scroll: {scroll}")
+
+    landmark_bottom = 0.0
+    for selector in contract["landmarks"]:
+        landmark = page.locator(selector).first
+        expect(landmark).to_be_visible()
+        box = landmark.bounding_box()
+        _require(box is not None, f"{name} landmark has no layout box: {selector}")
+        assert box is not None
+        landmark_bottom = max(landmark_bottom, box["y"] + box["height"])
+    return contract, landmark_bottom
+
+
+def _capture_required_screenshot(page: Page, output_dir: Path, name: str) -> None:
+    contract, landmark_bottom = _prepare_required_screenshot(page, name)
+    target = output_dir / name
+    page.screenshot(
+        path=target,
+        full_page=contract["full_page"],
+        animations="disabled",
+        caret="hide",
+    )
+    data = target.read_bytes()
+    _require(data[:8] == b"\x89PNG\r\n\x1a\n", f"{name} is not a PNG")
+    width, height = struct.unpack(">II", data[16:24])
+    viewport = page.viewport_size
+    _require(viewport is not None, f"{name} page has no viewport")
+    assert viewport is not None
+    _require(width == viewport["width"], f"{name} width {width} != {viewport['width']}")
+    _require(
+        height + 1 >= landmark_bottom,
+        f"{name} height {height} clips required landmark bottom {landmark_bottom:.1f}",
+    )
+    if contract["full_page"]:
+        _require(
+            height >= viewport["height"],
+            f"{name} full-page height {height} is below viewport {viewport['height']}",
+        )
+
+
 def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
+    _disable_capture_motion(page)
     page.locator("#tab-viewer").click()
     expect(page.locator("#panel-viewer")).to_be_visible()
     page.set_viewport_size({"width": 1280, "height": 800})
@@ -490,7 +719,7 @@ def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
     _assert_no_overlap(
         page.locator(".chart-panel"), page.locator("#match-feed"), "viewer primary regions"
     )
-    page.screenshot(path=output_dir / "viewer-1280x800.png")
+    _capture_required_screenshot(page, output_dir, "viewer-1280x800.png")
 
     page.set_viewport_size({"width": 900, "height": 600})
     _assert_no_horizontal_overflow(page, "viewer 900×600")
@@ -500,7 +729,7 @@ def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
     _assert_no_overlap(
         page.locator(".chart-panel"), page.locator("#match-feed"), "responsive viewer regions"
     )
-    page.screenshot(path=output_dir / "viewer-900x600.png")
+    _capture_required_screenshot(page, output_dir, "viewer-900x600.png")
 
     page.locator("#tab-manage").click()
     expect(page.locator("#panel-manage")).to_be_visible()
@@ -510,7 +739,7 @@ def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
         page.locator("#obs-heading").locator(".."),
         "manage login and OBS panels",
     )
-    page.screenshot(path=output_dir / "manage-900x600.png")
+    _capture_required_screenshot(page, output_dir, "manage-900x600.png")
 
 
 def _exercise_obs(
@@ -531,7 +760,7 @@ def _exercise_obs(
         page.locator(".stat-card-recent"),
         "OBS total/recent cards",
     )
-    page.screenshot(path=output_dir / "obs-session-1400x180.png")
+    _capture_required_screenshot(page, output_dir, "obs-session-1400x180.png")
 
     page.goto(urljoin(base_url, "/ui/obs.html?delta=range&limit=20"), wait_until="networkidle")
     expect(page.locator("#obs-mr-delta")).to_have_text("▲ +19 MR")

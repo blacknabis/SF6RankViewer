@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 HarnessState = Literal["empty", "populated", "partial-error", "post-reset"]
+HARNESS_NOW_MS = 1_777_632_030_000
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _WEB_ROOT = _PROJECT_ROOT / "src" / "sf6viewer" / "interfaces" / "web"
@@ -44,7 +45,7 @@ def _match(index: int) -> dict[str, Any]:
     my_mr = 1_655 - index + (2 if result == "WIN" else -1)
     return {
         "id": f"browser-match-{index:03d}",
-        "occurred_at_ms": 1_777_632_000_000 - index * 180_000,
+        "occurred_at_ms": HARNESS_NOW_MS - 30_000 - index * 180_000,
         "occurred_at_source": "BUCKLER",
         "my_character": "Juri",
         "my_mr": my_mr,
@@ -63,7 +64,7 @@ _POPULATED_MATCHES = tuple(_match(index) for index in range(55))
 
 def _mr_history() -> list[dict[str, Any]]:
     base = 1_500
-    start_ms = 1_777_614_180_000
+    start_ms = HARNESS_NOW_MS - 30_000 - 99 * 180_000
     history: list[dict[str, Any]] = []
     for index in range(100):
         result = "WIN" if index % 4 != 0 else "LOSE"
