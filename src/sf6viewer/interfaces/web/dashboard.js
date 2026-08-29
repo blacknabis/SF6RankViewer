@@ -41,6 +41,61 @@ const timestamp = (value) => {
   return new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 };
 
+function normalizeDashboardTabHash(hash) {
+  const controller = window.SF6ViewerController;
+  if (controller && typeof controller.normalizeTabHash === "function") {
+    return controller.normalizeTabHash(hash);
+  }
+  return hash === "#manage" ? "#manage" : "#viewer";
+}
+
+function applyDashboardTab(rawHash, { focus = false } = {}) {
+  const hash = normalizeDashboardTabHash(rawHash);
+  const viewerSelected = hash === "#viewer";
+  const viewerTab = byId("tab-viewer");
+  const manageTab = byId("tab-manage");
+  const viewerPanel = byId("panel-viewer");
+  const managePanel = byId("panel-manage");
+
+  if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
+  viewerTab.setAttribute("aria-selected", String(viewerSelected));
+  viewerTab.setAttribute("tabindex", viewerSelected ? "0" : "-1");
+  manageTab.setAttribute("aria-selected", String(!viewerSelected));
+  manageTab.setAttribute("tabindex", viewerSelected ? "-1" : "0");
+  viewerPanel.hidden = !viewerSelected;
+  managePanel.hidden = viewerSelected;
+  if (focus) (viewerSelected ? viewerTab : manageTab).focus();
+}
+
+function configureDashboardTabs() {
+  const tabs = [byId("tab-viewer"), byId("tab-manage")];
+  const hashes = ["#viewer", "#manage"];
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => {
+      const hash = hashes[index];
+      if (window.location.hash === hash) {
+        applyDashboardTab(hash, { focus: true });
+      } else {
+        window.location.hash = hash;
+      }
+    });
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = null;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index + tabs.length - 1) % tabs.length;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % tabs.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = tabs.length - 1;
+      if (nextIndex === null) return;
+      event.preventDefault();
+      tabs[nextIndex].focus();
+    });
+  });
+
+  window.addEventListener("hashchange", () => { applyDashboardTab(window.location.hash); });
+  applyDashboardTab(window.location.hash);
+}
+
 async function getJson(path) {
   const response = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`요청 실패 (${response.status})`);
@@ -527,6 +582,7 @@ async function refresh() {
   }
 }
 
+configureDashboardTabs();
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
 byId("auto-collection-toggle").addEventListener("click", () => { void toggleAutoCollection(); });

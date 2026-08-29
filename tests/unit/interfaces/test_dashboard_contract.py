@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from html.parser import HTMLParser
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 WEB_ROOT = (
     Path(__file__).resolve().parents[3]
@@ -75,7 +76,8 @@ def test_tabs_have_accessible_relationships_and_default_to_viewer() -> None:
 
 def test_viewer_and_existing_manage_element_ids_are_preserved() -> None:
     dashboard = _dashboard()
-    actual_ids = {attrs["id"] for _, attrs in dashboard.elements if "id" in attrs}
+    id_list = [attrs["id"] for _, attrs in dashboard.elements if "id" in attrs]
+    actual_ids = set(id_list)
 
     manage_ids = {
         "app-version",
@@ -168,6 +170,7 @@ def test_viewer_and_existing_manage_element_ids_are_preserved() -> None:
         "matchup-empty",
     }
 
+    assert len(id_list) == len(actual_ids), "dashboard IDs must be unique"
     assert manage_ids | viewer_ids <= actual_ids
 
 
@@ -180,12 +183,64 @@ def test_dashboard_scripts_load_helpers_controller_renderer_then_entrypoint() ->
         "/ui/dashboard.js",
     ]
     assert [script for script in dashboard.scripts if script in expected] == expected
+    for script in dashboard.scripts:
+        if script.startswith("/ui/") and script.endswith(".js"):
+            assert (WEB_ROOT / PurePosixPath(script).name).is_file(), script
 
 
 def test_dashboard_css_defines_responsive_focus_and_reduced_motion_contracts() -> None:
     css = (WEB_ROOT / "dashboard.css").read_text(encoding="utf-8")
 
-    assert "@media (max-width: 900px)" in css
-    assert "@media (max-width: 560px)" in css
-    assert ":focus-visible" in css
-    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert re.search(
+        r"@media\s*\(max-width:\s*900px\).*?\.viewer-primary-grid\s*"
+        r"\{[^}]*grid-template-columns:\s*1fr",
+        css,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"@media\s*\(max-width:\s*560px\).*?\.viewer-kpi-grid.*?"
+        r"\{[^}]*grid-template-columns:\s*1fr",
+        css,
+        re.DOTALL,
+    )
+    assert re.search(
+        r":focus-visible[^\{]*\{[^}]*outline:\s*[^;]+;[^}]*outline-offset:",
+        css,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"@media\s*\(prefers-reduced-motion:\s*reduce\).*?"
+        r"animation-duration:\s*0\.01ms\s*!important;.*?"
+        r"transition-duration:\s*0\.01ms\s*!important;",
+        css,
+        re.DOTALL,
+    )
+
+
+def test_viewer_boundary_and_tab_entrypoint_contracts_are_present() -> None:
+    viewer_path = WEB_ROOT / "dashboard-viewer.js"
+    assert viewer_path.is_file()
+    viewer_source = viewer_path.read_text(encoding="utf-8")
+    dashboard_source = (WEB_ROOT / "dashboard.js").read_text(encoding="utf-8")
+
+    for boundary in (
+        "SF6DashboardViewer",
+        "create",
+        "renderAggregate",
+        "renderFeed",
+        "setRegionState",
+        "bindInteractions",
+    ):
+        assert boundary in viewer_source
+
+    for tab_contract in (
+        "normalizeTabHash",
+        '"#viewer"',
+        '"#manage"',
+        'setAttribute("aria-selected"',
+        'setAttribute("tabindex"',
+        ".hidden =",
+        'addEventListener("click"',
+        'addEventListener("hashchange"',
+    ):
+        assert tab_contract in dashboard_source
