@@ -27,14 +27,14 @@ The implementation remains Vanilla HTML/CSS/JavaScript and extends the existing 
 
 `src/sf6viewer/interfaces/api/app.py` keeps `/api/v1/obs` as the single aggregate projection and extends it additively. Existing fields and `schema_version: "2"` remain unchanged so deployed OBS pages continue to bind successfully.
 
-A small process-local session tracker is created with the FastAPI app. At API creation it records `started_at_ms` and snapshots the latest known MR for each character from visible, non-reset match history. “Post-start” is determined by canonical match `occurred_at_ms`, not ingestion time: a delayed match that occurred before startup cannot change the session, while a match that occurred after startup is included whenever collected. Current MR is the newest visible, non-null MR for the active character by `(occurred_at_ms, id)`.
+A small process-local session tracker is created with the FastAPI app. At API creation it records `started_at_ms` and snapshots the latest known MR for each character from visible, non-reset match history. “Post-start” is determined by canonical match `occurred_at_ms`, not ingestion time: a delayed match that occurred before startup cannot change the session, while a match that occurred after startup is included whenever collected. Session current MR is chosen only from the immutable startup snapshot and visible, non-null matches whose occurrence time is strictly after the effective boundary. A delayed pre-boundary record is never admitted to that candidate set, even if its timestamp is newer than the snapshotted baseline.
 
 For a character with no startup baseline, the tracker uses the oldest visible, non-null post-start MR as baseline. If several matches arrive in one collection, the oldest becomes baseline and the newest becomes current, retaining their within-session movement. Once chosen, a baseline never moves during ordinary reloads or delayed collection. An explicit match reset is also a viewer-session boundary: when `match_reset_at_ms` advances beyond the tracker start, the tracker adopts the reset timestamp, clears its baselines, and applies the same first-observed rule to subsequent visible matches. Access is synchronized because FastAPI sync handlers may execute in multiple worker threads.
 
 The extended safe response contains:
 
 - `viewer_profile`: account display name plus character-aligned rank/MR/LP presentation. Character is the resolved active character. MR/LP come from its newest visible match; profile MR/LP/rank are used only when the latest profile character matches. Mismatched character-specific fields are `null`.
-- `session`: effective start/reset time, active-character baseline MR, current MR, signed delta, and the number of decisive matches whose occurrence time follows that boundary.
+- `session`: effective start/reset time, `boundary_kind` (`APP_START` or `MATCH_RESET`), active-character baseline MR, current MR, signed delta, and the number of decisive matches whose occurrence time follows that boundary.
 - `streak`: `WIN` or `LOSE` and its positive count, or `null` when there is no decisive current streak.
 - `matchups`: opponent character, wins, losses, and total for the active character's recent 100 decisive matches.
 - enriched `mr_history` points: match ID, timestamp, MR, opponent name, opponent character, and result. These are already-public normalized match fields and contain no source evidence.
@@ -58,6 +58,7 @@ The response additions have this representative shape (existing fields are abbre
   },
   "session": {
     "started_at_ms": 1787972400000,
+    "boundary_kind": "APP_START",
     "baseline_mr": 1597,
     "current_mr": 1642,
     "delta": 45,
@@ -124,7 +125,7 @@ The initial feed loads 25 records. “More” requests the next offset page, mer
 - `session` displays the API-provided signed session delta.
 - `range` slices the chronological MR history to the chosen limit and computes first-to-last delta.
 - The chart uses the same selected 20/50/100 history.
-- The delta label includes an up/down/flat symbol, signed MR value, and `APP START` or `LAST N` context.
+- The delta label includes an up/down/flat symbol, signed MR value, and `APP START`, `SINCE RESET`, or `LAST N` context. Session mode maps the API's `boundary_kind` to `APP START`/`SINCE RESET`; range mode uses `LAST N`.
 - Missing MR data renders `— MR` without throwing or changing existing cards.
 
 `src/sf6viewer/interfaces/web/obs.html` adds the delta label inside the chart header. `obs.css` reserves a compact header row above the existing plot while retaining the 1400×180 canvas and existing four-card geometry.
@@ -173,6 +174,7 @@ Implementation follows red-green-refactor for each behavior.
 - Startup baseline capture and immutability across later refreshes.
 - First-observed baseline for a character absent at startup, including multiple matches arriving together.
 - Occurrence-time semantics for delayed pre-start and post-start ingestion.
+- A delayed, newer pre-start match collected after startup cannot alter session current MR or delta.
 - In-process match reset rebasing.
 - Active-character filtering shared by totals, recent, session, streak, history, and matchups.
 - Character-aligned viewer profile behavior when the latest profile and match characters differ.
@@ -199,6 +201,7 @@ Pure JavaScript helpers are isolated from DOM mutation in `viewer-metrics.js` an
 - Hash reload restores the selected tab.
 - Session/range switching is immediate and preserves the app-session value.
 - OBS URLs for both modes render the correct delta label and history window.
+- A post-reset session renders `SINCE RESET`, never `APP START`.
 - Login, auto-collection toggle, manual collection, reset, cleanup, and OBS copy retain their prior bridge calls and busy-state behavior.
 
 ### Regression commands
