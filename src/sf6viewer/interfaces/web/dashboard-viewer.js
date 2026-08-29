@@ -17,6 +17,7 @@
     const display = (value) => value === null || value === undefined || value === "" ? "—" : String(value);
     const number = (value) => finite(value) ? new Intl.NumberFormat("ko-KR").format(value) : "—";
     const clear = (node) => { while (node && node.firstChild) node.removeChild(node.firstChild); };
+    const feedNodes = new Map();
 
     function setText(id, value) {
       const node = element(id);
@@ -133,7 +134,9 @@
       const area = element("mr-chart-area");
       const line = element("mr-chart-line");
       const group = element("mr-chart-points");
+      const dataList = element("mr-chart-data");
       clear(group);
+      clear(dataList);
       hideTooltip();
       const empty = points.length === 0;
       const emptyState = element("chart-empty");
@@ -178,13 +181,13 @@
         target.setAttribute("cy", coordinate.y.toFixed(2));
         target.setAttribute("r", "4");
         target.setAttribute("tabindex", "0");
-        target.setAttribute("role", "button");
         target.setAttribute("aria-label", tooltipText(coordinate.point));
         target.addEventListener("mouseenter", () => showTooltip(coordinate.point, coordinate.x, coordinate.y));
         target.addEventListener("focus", () => showTooltip(coordinate.point, coordinate.x, coordinate.y));
         target.addEventListener("mouseleave", hideTooltip);
         target.addEventListener("blur", hideTooltip);
         group.appendChild(target);
+        if (dataList) appendText(dataList, "li", "", tooltipText(coordinate.point));
       }
       setText("chart-state", `${points.length}건의 MR 기록을 시간순으로 표시합니다.`);
     }
@@ -246,30 +249,60 @@
       return "등급 정보 없음";
     }
 
+    function createFeedCard() {
+      const item = document.createElement("li");
+      item.className = "match-card";
+      const header = document.createElement("div");
+      header.className = "match-card-header";
+      const result = appendText(header, "strong", "match-card-result", "");
+      const delta = appendText(header, "span", "match-delta-neutral", "");
+      item.appendChild(header);
+      const versus = appendText(item, "strong", "match-versus", "");
+      const opponent = appendText(item, "span", "match-opponent", "");
+      const meta = document.createElement("div");
+      meta.className = "match-card-meta";
+      const relative = appendText(meta, "span", "muted", "");
+      const occurred = appendText(meta, "span", "muted", "");
+      item.appendChild(meta);
+      return { item, result, delta, versus, opponent, relative, occurred };
+    }
+
+    function updateFeedCard(card, match, now) {
+      const result = Object.prototype.hasOwnProperty.call(RESULT_LABELS, match.result) ? match.result : "DRAW";
+      card.item.dataset.result = result;
+      card.result.textContent = RESULT_LABELS[result];
+      card.delta.className = deltaClass(match.mr_delta).replace("delta", "match-delta");
+      card.delta.textContent = metrics.deltaLabel(match.mr_delta);
+      card.delta.setAttribute("aria-label", `MR 변동 ${metrics.deltaLabel(match.mr_delta)}`);
+      card.versus.textContent = `${display(match.my_character)} vs ${display(match.opponent_character)}`;
+      card.opponent.textContent = `${display(match.opponent_name)} · ${matchRating(match)}`;
+      card.relative.textContent = metrics.relativeTimeKo(match.occurred_at_ms, now);
+      card.occurred.textContent = formatDate(match.occurred_at_ms);
+    }
+
     function renderFeed(feedState = {}) {
       const list = element("match-feed-list");
-      clear(list);
       const items = Array.isArray(feedState.items) ? feedState.items : [];
       const now = Date.now();
-      for (const match of items) {
-        const result = Object.prototype.hasOwnProperty.call(RESULT_LABELS, match.result) ? match.result : "DRAW";
-        const item = document.createElement("li");
-        item.className = "match-card";
-        item.dataset.result = result;
-        const header = document.createElement("div");
-        header.className = "match-card-header";
-        appendText(header, "strong", "match-card-result", RESULT_LABELS[result]);
-        const delta = appendText(header, "span", deltaClass(match.mr_delta).replace("delta", "match-delta"), metrics.deltaLabel(match.mr_delta));
-        delta.setAttribute("aria-label", `MR 변동 ${metrics.deltaLabel(match.mr_delta)}`);
-        item.appendChild(header);
-        appendText(item, "strong", "match-versus", `${display(match.my_character)} vs ${display(match.opponent_character)}`);
-        appendText(item, "span", "match-opponent", `${display(match.opponent_name)} · ${matchRating(match)}`);
-        const meta = document.createElement("div");
-        meta.className = "match-card-meta";
-        appendText(meta, "span", "muted", metrics.relativeTimeKo(match.occurred_at_ms, now));
-        appendText(meta, "span", "muted", formatDate(match.occurred_at_ms));
-        item.appendChild(meta);
-        list.appendChild(item);
+      const retained = new Set();
+      items.forEach((match, index) => {
+        const key = typeof match.id === "string" && match.id
+          ? match.id
+          : `anonymous:${match.occurred_at_ms || 0}:${index}`;
+        retained.add(key);
+        let card = feedNodes.get(key);
+        if (!card) {
+          card = createFeedCard();
+          feedNodes.set(key, card);
+        }
+        updateFeedCard(card, match, now);
+        list.appendChild(card.item);
+      });
+      for (const [key, card] of feedNodes) {
+        if (!retained.has(key)) {
+          card.item.remove();
+          feedNodes.delete(key);
+        }
       }
       const empty = items.length === 0 && !feedState.inFlight;
       const emptyState = element("match-feed-empty");

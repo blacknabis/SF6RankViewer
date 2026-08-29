@@ -1,6 +1,7 @@
 "use strict";
 
 const POLL_INTERVAL_MS = 12_000;
+const REGION_TIMEOUT_MS = 8_000;
 const USER_CODE_PATTERN = /^\d{10}$/;
 const LOGIN_MESSAGES = Object.freeze({
   "SESSION.ACCOUNT_MISMATCH": "기존 계정과 로그인한 계정이 다릅니다.",
@@ -22,6 +23,7 @@ const COLLECTION_MESSAGES = Object.freeze({
   "INTERNAL.UNEXPECTED": "수집을 완료할 수 없습니다. 잠시 후 다시 시도하세요."
 });
 let refreshInFlight = false;
+let refreshQueued = false;
 let loginInFlight = false;
 let resetInFlight = false;
 let legacyCleanupInFlight = false;
@@ -43,6 +45,23 @@ const timestamp = (value) => {
 const metrics = window.SF6ViewerMetrics;
 const controllerAdapter = window.SF6ViewerController;
 const dashboardViewer = window.SF6DashboardViewer.create({ document, metrics });
+const preferenceRevision = controllerAdapter.createRevisionGuard();
+const autoStatusRevision = controllerAdapter.createRevisionGuard();
+const preferenceWrites = controllerAdapter.createPreferenceWriteQueue(async (deltaMode, chartLimit) => {
+  const bridge = nativeLoginApi();
+  if (!bridge || typeof bridge.set_viewer_preferences !== "function") return { ok: true };
+  const result = await bridge.set_viewer_preferences(deltaMode, chartLimit);
+  if (!result || result.ok !== true) throw new Error("viewer preference rejected");
+  return result;
+});
+const autoStatusRequest = controllerAdapter.createSingleFlight(() => {
+  const bridge = nativeLoginApi();
+  const revision = autoStatusRevision.capture();
+  if (!bridge || typeof bridge.auto_collection_status !== "function") {
+    return Promise.resolve({ status: null, revision });
+  }
+  return Promise.resolve(bridge.auto_collection_status()).then((status) => ({ status, revision }));
+});
 let dashboardState = {
   regions: {},
   preferences: { ...controllerAdapter.DEFAULT_PREFERENCES },
@@ -105,10 +124,22 @@ function configureDashboardTabs() {
   applyDashboardTab(window.location.hash);
 }
 
-async function getJson(path) {
-  const response = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
+async function getJson(path, { signal } = {}) {
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+    signal
+  });
   if (!response.ok) throw new Error(`요청 실패 (${response.status})`);
   return response.json();
+}
+
+function withRegionTimeout(operation) {
+  return controllerAdapter.withTimeout(operation, { timeoutMs: REGION_TIMEOUT_MS });
+}
+
+function timedJson(path) {
+  return withRegionTimeout(({ signal }) => getJson(path, { signal }));
 }
 
 function setConnection(state, message) {
@@ -275,12 +306,15 @@ async function restoreAutoCollectionStatus() {
   }
 
   autoCollectionStatusInFlight = true;
+  const revision = autoStatusRevision.capture();
   updateLoginAvailability();
   try {
-    const result = await bridge.auto_collection_status();
-    applyAutoCollectionStatus(result);
+    const result = await withRegionTimeout(() => autoStatusRequest());
+    if (autoStatusRevision.isCurrent(revision) && autoStatusRevision.isCurrent(result.revision)) {
+      applyAutoCollectionStatus(result.status);
+    }
   } catch (_) {
-    applyAutoCollectionStatus(null);
+    if (autoStatusRevision.isCurrent(revision)) applyAutoCollectionStatus(null);
   } finally {
     autoCollectionStatusInFlight = false;
     updateLoginAvailability();
@@ -302,6 +336,7 @@ async function toggleAutoCollection() {
   }
 
   autoCollectionInFlight = true;
+  autoStatusRevision.advance();
   const button = byId("auto-collection-toggle");
   button.setAttribute("aria-busy", "true");
   updateLoginAvailability();
@@ -314,11 +349,7 @@ async function toggleAutoCollection() {
       setAutoCollectionStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
       return;
     }
-    autoCollectionEnabled = result.enabled;
-    dashboardState = {
-      ...dashboardState,
-      live: controllerAdapter.liveRecordingPresentation(result)
-    };
+    applyAutoCollectionStatus(result);
     renderViewerAggregate();
     const interval = number(result.interval_seconds);
     setAutoCollectionStatus(result.enabled
@@ -397,11 +428,16 @@ async function clearMatches() {
         ? "자동 수집이 다음 주기에 최신 전적을 확인합니다."
         : "자동 수집이 중지되어 있습니다. 필요하면 전적 수집 시작 또는 최근 대전 수집을 선택하세요.";
       setMatchResetStatus(`전적 ${number(result.cleared)}건을 초기화했습니다. ${followUp}`);
+      dashboardState = controllerAdapter.invalidateFeedState(dashboardState);
       dashboardState = {
         ...dashboardState,
-        feed: { items: [], nextPage: 1, total: 0, exhausted: false, inFlight: false }
+        regions: {
+          ...dashboardState.regions,
+          manageMatches: { value: { items: [] }, stale: false }
+        }
       };
       dashboardViewer.renderFeed(dashboardState.feed);
+      renderMatch(null);
       await refresh();
     } else {
       setMatchResetStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
@@ -617,6 +653,7 @@ function renderManagementRegions() {
 
 async function restoreViewerPreferences() {
   const bridge = nativeLoginApi();
+  const revision = preferenceRevision.capture();
   let preferences = { ...controllerAdapter.DEFAULT_PREFERENCES };
   if (bridge && typeof bridge.viewer_preferences === "function") {
     try {
@@ -625,50 +662,65 @@ async function restoreViewerPreferences() {
       preferences = { ...controllerAdapter.DEFAULT_PREFERENCES };
     }
   }
-  dashboardState = { ...dashboardState, preferences };
-  renderViewerAggregate();
+  dashboardState = controllerAdapter.applyRestoredPreference({
+    state: dashboardState,
+    preferences,
+    revisionGuard: preferenceRevision,
+    revision,
+    render: (next) => {
+      dashboardState = next;
+      renderViewerAggregate();
+    }
+  });
 }
 
 async function changeViewerPreference(changes) {
   const requested = { ...dashboardState.preferences, ...changes };
-  const bridge = nativeLoginApi();
+  const revision = preferenceRevision.advance();
   try {
-    dashboardState = await controllerAdapter.applyViewerPreference({
+    const next = await controllerAdapter.applyViewerPreference({
       state: dashboardState,
       deltaMode: requested.deltaMode,
       chartLimit: requested.chartLimit,
-      persist: bridge && typeof bridge.set_viewer_preferences === "function"
-        ? async (deltaMode, chartLimit) => {
-          const result = await bridge.set_viewer_preferences(deltaMode, chartLimit);
-          if (!result || result.ok !== true) throw new Error("viewer preference rejected");
-        }
-        : undefined,
+      persist: preferenceWrites,
       render: (next) => {
         dashboardState = next;
         renderViewerAggregate();
       }
     });
+    if (preferenceRevision.isCurrent(revision)) dashboardState = next;
   } catch (_) {
-    dashboardViewer.setRegionState("aggregate", {
-      stale: true,
-      message: "화면에는 적용했지만 뷰어 설정을 저장하지 못했습니다."
-    });
+    if (preferenceRevision.isCurrent(revision)) {
+      dashboardViewer.setRegionState("aggregate", {
+        stale: true,
+        message: "화면에는 적용했지만 뷰어 설정을 저장하지 못했습니다."
+      });
+    }
   }
 }
 
 async function loadMoreFeed() {
+  const generation = controllerAdapter.feedGeneration(dashboardState);
   try {
     const feed = await controllerAdapter.loadNextFeed(
-      (page) => getJson(`/api/v1/matches/latest?page=${page}&page_size=25`),
+      (page) => timedJson(`/api/v1/matches/latest?page=${page}&page_size=25`),
       dashboardState.feed,
       (transition) => {
-        dashboardState = { ...dashboardState, feed: transition };
-        dashboardViewer.renderFeed(transition);
+        const next = controllerAdapter.commitFeedState({ state: dashboardState, generation, feed: transition });
+        if (next !== dashboardState) {
+          dashboardState = next;
+          dashboardViewer.renderFeed(dashboardState.feed);
+        }
       }
     );
-    dashboardState = { ...dashboardState, feed };
+    dashboardState = controllerAdapter.commitFeedState({ state: dashboardState, generation, feed });
   } catch (error) {
-    if (error && error.state) dashboardState = { ...dashboardState, feed: error.state };
+    if (!controllerAdapter.isFeedGenerationCurrent(dashboardState, generation)) return;
+    if (error && error.state) {
+      dashboardState = controllerAdapter.commitFeedState({
+        state: dashboardState, generation, feed: error.state
+      });
+    }
     dashboardViewer.renderFeed(dashboardState.feed);
     dashboardViewer.setRegionState("feed", {
       stale: true,
@@ -678,43 +730,65 @@ async function loadMoreFeed() {
 }
 
 async function refresh() {
-  if (refreshInFlight) return;
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return;
+  }
   refreshInFlight = true;
+  const refreshFeedGeneration = controllerAdapter.feedGeneration(dashboardState);
+  const refreshAutoRevision = autoStatusRevision.capture();
+  const refreshDuringAutoMutation = autoCollectionInFlight;
   try {
     const bridge = nativeLoginApi();
     const refreshed = await controllerAdapter.refreshRegions({
       health: async () => {
-        const value = await getJson("/api/v1/health");
+        const value = await timedJson("/api/v1/health");
         if (value.status !== "ok") throw new Error("health unavailable");
         return value;
       },
       system: async () => {
-        const value = await getJson("/api/v1/system");
+        const value = await timedJson("/api/v1/system");
         if (value.status !== "ok") throw new Error("system unavailable");
         return value;
       },
-      profiles: () => getJson("/api/v1/profile-snapshots?page_size=1"),
-      manageMatches: () => getJson("/api/v1/matches/latest?page_size=1"),
-      jobs: () => getJson("/api/v1/jobs?page_size=1"),
-      quarantines: () => getJson("/api/v1/quarantine?page_size=5&status=OPEN"),
-      ingestions: () => getJson("/api/v1/ingestion-runs?page_size=5"),
-      obs: () => getJson("/api/v1/obs"),
-      feed: () => getJson("/api/v1/matches/latest?page=1&page_size=25"),
+      profiles: () => timedJson("/api/v1/profile-snapshots?page_size=1"),
+      manageMatches: () => timedJson("/api/v1/matches/latest?page_size=1"),
+      jobs: () => timedJson("/api/v1/jobs?page_size=1"),
+      quarantines: () => timedJson("/api/v1/quarantine?page_size=5&status=OPEN"),
+      ingestions: () => timedJson("/api/v1/ingestion-runs?page_size=5"),
+      obs: () => timedJson("/api/v1/obs"),
+      feed: () => timedJson("/api/v1/matches/latest?page=1&page_size=25"),
       auto: bridge && typeof bridge.auto_collection_status === "function"
-        ? () => bridge.auto_collection_status()
+        ? () => withRegionTimeout(() => autoStatusRequest())
         : Promise.resolve(null)
     }, dashboardState);
     // Preferences and feed paging can change while the settled refresh is in
     // progress. Only the independently refreshed regions are replaced here.
-    dashboardState = { ...dashboardState, regions: refreshed.regions };
+    const generationStillCurrent = controllerAdapter.isFeedGenerationCurrent(
+      dashboardState, refreshFeedGeneration
+    );
+    const regions = generationStillCurrent
+      ? refreshed.regions
+      : {
+        ...refreshed.regions,
+        feed: dashboardState.regions.feed,
+        manageMatches: dashboardState.regions.manageMatches
+      };
+    dashboardState = { ...dashboardState, regions };
 
     const feedRegion = dashboardState.regions.feed;
-    if (feedRegion && !feedRegion.stale && !dashboardState.feed.inFlight) {
-      const aggregate = dashboardState.regions.obs;
+    const aggregate = dashboardState.regions.obs;
+    const aggregateSession = aggregate && aggregate.value && aggregate.value.session;
+    const resetBoundaryAdvanced = controllerAdapter.hasAdvancedResetBoundary(
+      dashboardState, aggregateSession
+    );
+    if (feedRegion && !feedRegion.stale
+        && (!dashboardState.feed.inFlight || resetBoundaryAdvanced)) {
       dashboardState = controllerAdapter.applyFirstFeedPage({
         state: dashboardState,
         response: feedRegion.value,
-        session: aggregate && aggregate.value && aggregate.value.session
+        generation: refreshFeedGeneration,
+        session: aggregateSession
       });
     }
     dashboardViewer.renderFeed(dashboardState.feed);
@@ -723,7 +797,12 @@ async function refresh() {
       : { stale: false, message: dashboardState.feed.exhausted ? "모든 대전 기록을 표시했습니다." : `${dashboardState.feed.items.length}건 표시 중` });
 
     const autoRegion = dashboardState.regions.auto;
-    applyAutoCollectionStatus(autoRegion && !autoRegion.stale ? autoRegion.value : null);
+    const autoResult = autoRegion && !autoRegion.stale ? autoRegion.value : null;
+    if (!refreshDuringAutoMutation && autoStatusRevision.isCurrent(refreshAutoRevision)
+        && (!autoRegion || !autoRegion.stale)
+        && (!autoResult || autoStatusRevision.isCurrent(autoResult.revision))) {
+      applyAutoCollectionStatus(autoResult ? autoResult.status : null);
+    }
     renderViewerAggregate();
     renderManagementRegions();
 
@@ -735,6 +814,10 @@ async function refresh() {
   } finally {
     refreshInFlight = false;
     updateLoginAvailability();
+    if (refreshQueued) {
+      refreshQueued = false;
+      void refresh();
+    }
   }
 }
 

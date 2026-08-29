@@ -156,6 +156,7 @@ def test_viewer_and_existing_manage_element_ids_are_preserved() -> None:
         "mr-chart-area",
         "mr-chart-line",
         "mr-chart-points",
+        "mr-chart-data",
         "mr-chart-tooltip",
         "mr-chart-tooltip-status",
         "chart-state",
@@ -172,6 +173,8 @@ def test_viewer_and_existing_manage_element_ids_are_preserved() -> None:
 
     assert len(id_list) == len(actual_ids), "dashboard IDs must be unique"
     assert manage_ids | viewer_ids <= actual_ids
+    _, feed_list = dashboard.element("match-feed-list")
+    assert "aria-live" not in feed_list
 
 
 def test_dashboard_scripts_load_helpers_controller_renderer_then_entrypoint() -> None:
@@ -283,8 +286,8 @@ def test_dashboard_uses_controller_adapters_preferences_and_settled_refresh() ->
 def test_dashboard_refreshes_page_one_feed_and_scheduler_status_every_cycle() -> None:
     source = (WEB_ROOT / "dashboard.js").read_text(encoding="utf-8")
 
-    assert 'getJson("/api/v1/obs")' in source
-    assert 'getJson("/api/v1/matches/latest?page=1&page_size=25")' in source
+    assert 'timedJson("/api/v1/obs")' in source
+    assert 'timedJson("/api/v1/matches/latest?page=1&page_size=25")' in source
     refresh_body = re.search(
         r"async function refresh\(\)\s*\{(?P<body>.*?)\n\}",
         source,

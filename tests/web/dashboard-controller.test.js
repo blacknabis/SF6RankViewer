@@ -336,6 +336,7 @@ test("applyFirstFeedPage preserves expanded history during polling and clears it
   assert.equal(reset.feed.total, 0);
   assert.equal(reset.feed.exhausted, true);
   assert.equal(reset.feedBoundaryAtMs, 2_000);
+  assert.equal(reset.feedGeneration, 1);
 });
 
 test("systemRegionPresentation reports a localized retry state without cached data", () => {
@@ -343,6 +344,144 @@ test("systemRegionPresentation reports a localized retry state without cached da
     state: "error",
     message: "시스템 현황을 불러오지 못했습니다. 잠시 후 다시 시도합니다."
   });
+});
+
+test("feed generation discards poll and more completions that started before reset", async () => {
+  let resolvePoll;
+  let resolveMore;
+  let state = {
+    feedGeneration: 0,
+    feedBoundaryAtMs: 1_000,
+    feed: {
+      items: [{ id: "old", occurred_at_ms: 100 }],
+      nextPage: 2,
+      total: 50,
+      exhausted: false,
+      inFlight: false
+    }
+  };
+  const pollGeneration = controller.feedGeneration(state);
+  const moreGeneration = controller.feedGeneration(state);
+  const poll = new Promise((resolve) => { resolvePoll = resolve; }).then((response) => {
+    state = controller.applyFirstFeedPage({
+      state,
+      response,
+      generation: pollGeneration,
+      session: { started_at_ms: 1_000, boundary_kind: "APP_START" }
+    });
+  });
+  const more = controller.loadNextFeed(
+    () => new Promise((resolve) => { resolveMore = resolve; }),
+    state.feed
+  ).then((feed) => {
+    state = controller.commitFeedState({ state, generation: moreGeneration, feed });
+  });
+
+  await Promise.resolve();
+  state = controller.invalidateFeedState(state);
+  resolvePoll({
+    items: [{ id: "poll-old", occurred_at_ms: 200 }],
+    page: { page: 1, page_size: 25, total: 1 }
+  });
+  resolveMore({
+    items: [{ id: "more-old", occurred_at_ms: 50 }],
+    page: { page: 2, page_size: 25, total: 50 }
+  });
+  await Promise.all([poll, more]);
+
+  assert.equal(state.feedGeneration, 1);
+  assert.deepEqual(state.feed.items, []);
+  assert.equal(state.feed.nextPage, 1);
+});
+
+test("preference writes serialize and a late startup restore cannot overwrite user revision", async () => {
+  const pending = [];
+  const calls = [];
+  const writes = controller.createPreferenceWriteQueue((deltaMode, chartLimit) => {
+    calls.push([deltaMode, chartLimit]);
+    return new Promise((resolve) => { pending.push(resolve); });
+  });
+  const first = writes("range", 20);
+  const second = writes("session", 100);
+  await Promise.resolve();
+  assert.deepEqual(calls, [["range", 20]]);
+  pending[0]();
+  await first;
+  await Promise.resolve();
+  assert.deepEqual(calls, [["range", 20], ["session", 100]]);
+  pending[1]();
+  await second;
+
+  const guard = controller.createRevisionGuard();
+  const restoreRevision = guard.capture();
+  guard.advance();
+  let rendered = false;
+  const state = { preferences: { deltaMode: "range", chartLimit: 20 } };
+  const restored = controller.applyRestoredPreference({
+    state,
+    preferences: { deltaMode: "session", chartLimit: 50 },
+    revisionGuard: guard,
+    revision: restoreRevision,
+    render: () => { rendered = true; }
+  });
+  assert.equal(restored, state);
+  assert.equal(rendered, false);
+});
+
+test("revision guard rejects an auto-status poll resolved after a toggle", async () => {
+  const guard = controller.createRevisionGuard();
+  const pollRevision = guard.capture();
+  let resolvePoll;
+  let presentation = { live: false, text: "RECORDING OFF" };
+  const poll = new Promise((resolve) => { resolvePoll = resolve; }).then((status) => {
+    if (guard.isCurrent(pollRevision)) {
+      presentation = controller.liveRecordingPresentation(status);
+    }
+  });
+
+  guard.advance();
+  presentation = controller.liveRecordingPresentation({
+    ok: true, enabled: true, interval_seconds: 30
+  });
+  resolvePoll({ ok: true, enabled: false, interval_seconds: 30 });
+  await poll;
+  assert.deepEqual(presentation, { live: true, text: "LIVE RECORDING" });
+});
+
+test("timed regions settle independently and single-flight native requests are reused", async () => {
+  const scheduled = [];
+  let aborted = false;
+  let nativeCalls = 0;
+  let resolveNative;
+  const nativePending = new Promise((resolve) => { resolveNative = resolve; });
+  const singleFlight = controller.createSingleFlight(() => {
+    nativeCalls += 1;
+    return nativePending;
+  });
+  assert.equal(singleFlight(), singleFlight());
+  assert.equal(nativeCalls, 1);
+
+  const timed = controller.withTimeout(
+    () => singleFlight(),
+    {
+      timeoutMs: 8_000,
+      schedule: (callback) => { scheduled.push(callback); return scheduled.length; },
+      cancel: () => {},
+      createAbortController: () => ({ signal: {}, abort: () => { aborted = true; } })
+    }
+  );
+  const refreshed = controller.refreshRegions({
+    auto: timed,
+    system: Promise.resolve({ status: "ok" })
+  }, { regions: { auto: { value: { enabled: false }, stale: false } } });
+  scheduled[0]();
+  const state = await refreshed;
+  assert.equal(aborted, true);
+  assert.deepEqual(state.regions.auto, { value: { enabled: false }, stale: true });
+  assert.deepEqual(state.regions.system, { value: { status: "ok" }, stale: false });
+  assert.equal(singleFlight(), nativePending);
+  assert.equal(nativeCalls, 1);
+  resolveNative({ ok: true });
 });
 
 test("applyObsOptions renders the exact fixed loopback URL without persistence", () => {

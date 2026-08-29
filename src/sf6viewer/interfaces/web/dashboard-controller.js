@@ -106,8 +106,11 @@
     };
   }
 
-  function applyFirstFeedPage({ state, response, session } = {}) {
+  function applyFirstFeedPage({ state, response, session, generation } = {}) {
     const source = state && typeof state === "object" ? state : {};
+    if (Number.isInteger(generation) && !isFeedGenerationCurrent(source, generation)) {
+      return source;
+    }
     const current = cloneFeedState(source.feed);
     const payload = pagePayload(response, 1);
     if (payload.pageSize !== 25) throw new TypeError("invalid first feed page size");
@@ -118,8 +121,7 @@
     const previousBoundaryAtMs = Number.isInteger(source.feedBoundaryAtMs)
       ? source.feedBoundaryAtMs
       : null;
-    const resetBoundaryAdvanced = boundaryAtMs !== null && session.boundary_kind === "MATCH_RESET"
-      && (previousBoundaryAtMs === null || boundaryAtMs > previousBoundaryAtMs);
+    const resetBoundaryAdvanced = hasAdvancedResetBoundary(source, session);
     const existing = resetBoundaryAdvanced ? [] : current.items;
     const items = metrics.mergeFeed(existing, payload.items);
     const feed = {
@@ -137,8 +139,131 @@
     return {
       ...source,
       feed,
+      feedGeneration: resetBoundaryAdvanced ? feedGeneration(source) + 1 : feedGeneration(source),
       feedBoundaryAtMs: boundaryAtMs === null ? previousBoundaryAtMs : boundaryAtMs
     };
+  }
+
+  function hasAdvancedResetBoundary(state, session) {
+    const boundaryAtMs = session && Number.isInteger(session.started_at_ms)
+      ? session.started_at_ms
+      : null;
+    const previousBoundaryAtMs = state && Number.isInteger(state.feedBoundaryAtMs)
+      ? state.feedBoundaryAtMs
+      : null;
+    return boundaryAtMs !== null && session.boundary_kind === "MATCH_RESET"
+      && (previousBoundaryAtMs === null || boundaryAtMs > previousBoundaryAtMs);
+  }
+
+  function feedGeneration(state) {
+    return state && Number.isInteger(state.feedGeneration) && state.feedGeneration >= 0
+      ? state.feedGeneration
+      : 0;
+  }
+
+  function isFeedGenerationCurrent(state, generation) {
+    return Number.isInteger(generation) && feedGeneration(state) === generation;
+  }
+
+  function invalidateFeedState(state) {
+    const source = state && typeof state === "object" ? state : {};
+    return {
+      ...source,
+      feedGeneration: feedGeneration(source) + 1,
+      feed: { items: [], nextPage: 1, total: 0, exhausted: false, inFlight: false }
+    };
+  }
+
+  function commitFeedState({ state, generation, feed } = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    if (!isFeedGenerationCurrent(source, generation)) return source;
+    return { ...source, feed: cloneFeedState(feed) };
+  }
+
+  function createPreferenceWriteQueue(persist) {
+    if (typeof persist !== "function") throw new TypeError("persist must be a function");
+    let tail = Promise.resolve();
+    return (deltaMode, chartLimit) => {
+      const operation = tail.then(() => persist(deltaMode, chartLimit));
+      tail = operation.catch(() => {});
+      return operation;
+    };
+  }
+
+  function createRevisionGuard(initialRevision = 0) {
+    let revision = Number.isInteger(initialRevision) && initialRevision >= 0 ? initialRevision : 0;
+    return Object.freeze({
+      capture: () => revision,
+      advance: () => { revision += 1; return revision; },
+      isCurrent: (candidate) => Number.isInteger(candidate) && candidate === revision
+    });
+  }
+
+  function applyRestoredPreference({
+    state,
+    preferences,
+    revisionGuard,
+    revision,
+    render
+  } = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    if (!revisionGuard || typeof revisionGuard.isCurrent !== "function"
+        || !revisionGuard.isCurrent(revision)) return source;
+    const next = { ...source, preferences: metrics.normalizeObsOptions(preferences) };
+    if (typeof render === "function") render(next);
+    return next;
+  }
+
+  function createSingleFlight(operation) {
+    if (typeof operation !== "function") throw new TypeError("operation must be a function");
+    let pending = null;
+    return () => {
+      if (pending) return pending;
+      try {
+        pending = Promise.resolve(operation());
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      const current = pending;
+      current.then(
+        () => { if (pending === current) pending = null; },
+        () => { if (pending === current) pending = null; }
+      );
+      return current;
+    };
+  }
+
+  async function withTimeout(operation, {
+    timeoutMs,
+    schedule = setTimeout,
+    cancel = clearTimeout,
+    createAbortController
+  } = {}) {
+    if (typeof operation !== "function") throw new TypeError("operation must be a function");
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError("timeoutMs must be positive");
+    const makeController = typeof createAbortController === "function"
+      ? createAbortController
+      : () => typeof AbortController === "function"
+        ? new AbortController()
+        : { signal: undefined, abort() {} };
+    const abortController = makeController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = schedule(() => {
+        abortController.abort();
+        const error = new Error("request timed out");
+        error.code = "REQUEST_TIMEOUT";
+        reject(error);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => operation({ signal: abortController.signal })),
+        timeout
+      ]);
+    } finally {
+      cancel(timer);
+    }
   }
 
   function systemRegionPresentation(region) {
@@ -229,12 +354,22 @@
     DEFAULT_PREFERENCES,
     applyFirstFeedPage,
     applyObsOptions,
+    applyRestoredPreference,
     applyViewerPreference,
+    commitFeedState,
+    createPreferenceWriteQueue,
+    createRevisionGuard,
+    createSingleFlight,
+    feedGeneration,
+    hasAdvancedResetBoundary,
+    invalidateFeedState,
+    isFeedGenerationCurrent,
     liveRecordingPresentation,
     loadNextFeed,
     normalizeBridgePreferences,
     normalizeTabHash,
     refreshRegions,
-    systemRegionPresentation
+    systemRegionPresentation,
+    withTimeout
   };
 });

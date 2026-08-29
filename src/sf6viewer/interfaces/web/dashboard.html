@@ -117,6 +117,7 @@
                 <path id="mr-chart-line" class="chart-line" d=""></path>
                 <g id="mr-chart-points"></g>
               </svg>
+              <ol id="mr-chart-data" class="sr-only" aria-label="MR 차트 데이터"></ol>
               <div id="mr-chart-tooltip" class="chart-tooltip" role="tooltip" hidden></div>
               <p id="chart-empty" class="chart-empty empty-state">표시할 MR 기록이 없습니다.</p>
             </div>
@@ -132,7 +133,7 @@
               </div>
               <span class="feed-live-label">LATEST</span>
             </div>
-            <ol id="match-feed-list" class="match-feed-list" aria-live="polite"></ol>
+            <ol id="match-feed-list" class="match-feed-list"></ol>
             <p id="match-feed-empty" class="empty-state">아직 수집된 대전 기록이 없습니다.</p>
             <button id="match-feed-load-more" class="secondary-button load-more" type="button" hidden>더 보기</button>
             <p id="match-feed-state" class="region-state" role="status" aria-live="polite">대전 기록을 불러오는 중입니다.</p>
