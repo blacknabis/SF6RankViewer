@@ -397,6 +397,11 @@ async function clearMatches() {
         ? "자동 수집이 다음 주기에 최신 전적을 확인합니다."
         : "자동 수집이 중지되어 있습니다. 필요하면 전적 수집 시작 또는 최근 대전 수집을 선택하세요.";
       setMatchResetStatus(`전적 ${number(result.cleared)}건을 초기화했습니다. ${followUp}`);
+      dashboardState = {
+        ...dashboardState,
+        feed: { items: [], nextPage: 1, total: 0, exhausted: false, inFlight: false }
+      };
+      dashboardViewer.renderFeed(dashboardState.feed);
       await refresh();
     } else {
       setMatchResetStatus(safeCollectionMessage(result && typeof result.code === "string" ? result.code : "INTERNAL.UNEXPECTED"));
@@ -588,15 +593,14 @@ function renderViewerAggregate() {
 function renderManagementRegions() {
   const regions = dashboardState.regions;
   const system = regions.system && regions.system.value;
+  const systemPresentation = controllerAdapter.systemRegionPresentation(regions.system);
+  setState(systemPresentation.state, systemPresentation.message);
   if (system) {
     byId("app-version").textContent = typeof system.app_version === "string" ? `v${system.app_version}` : "버전 정보 없음";
     byId("match-count").textContent = number(system.match_count);
     byId("profile-count").textContent = number(system.profile_snapshot_count);
     byId("running-job-count").textContent = number(system.running_job_count);
     byId("quarantine-count").textContent = number(system.open_quarantine_count);
-    setState(regions.system.stale ? "error" : "ok", regions.system.stale
-      ? "시스템 현황 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다."
-      : system.match_count ? "최신 로컬 데이터를 표시합니다." : "아직 수집된 데이터가 없습니다. 로그인을 완료한 뒤 수집을 시작하세요.");
   }
   const profiles = regions.profiles && regions.profiles.value;
   const matches = regions.manageMatches && regions.manageMatches.value;
@@ -609,29 +613,6 @@ function renderManagementRegions() {
   if (quarantines && Array.isArray(quarantines.items)) renderQuarantine(quarantines.items);
   if (ingestions && Array.isArray(ingestions.items)) renderIngestions(ingestions.items);
   byId("last-refresh").textContent = `마지막 갱신: ${timestamp(Date.now())}`;
-}
-
-function applyFirstFeedPage(response) {
-  if (!response || !Array.isArray(response.items) || !response.page || response.page.page !== 1
-      || response.page.page_size !== 25 || !Number.isInteger(response.page.total)) {
-    throw new TypeError("invalid first feed page");
-  }
-  const items = metrics.mergeFeed(dashboardState.feed.items, response.items);
-  dashboardState = {
-    ...dashboardState,
-    feed: {
-      items,
-      nextPage: Math.max(2, dashboardState.feed.nextPage),
-      total: response.page.total,
-      exhausted: metrics.isFeedExhausted({
-        uniqueCount: items.length,
-        total: response.page.total,
-        receivedCount: response.items.length,
-        pageSize: response.page.page_size
-      }),
-      inFlight: dashboardState.feed.inFlight
-    }
-  };
 }
 
 async function restoreViewerPreferences() {
@@ -670,7 +651,7 @@ async function changeViewerPreference(changes) {
   } catch (_) {
     dashboardViewer.setRegionState("aggregate", {
       stale: true,
-      message: "뷰어 설정을 저장하지 못했습니다. 기존 설정을 유지합니다."
+      message: "화면에는 적용했지만 뷰어 설정을 저장하지 못했습니다."
     });
   }
 }
@@ -729,7 +710,12 @@ async function refresh() {
 
     const feedRegion = dashboardState.regions.feed;
     if (feedRegion && !feedRegion.stale && !dashboardState.feed.inFlight) {
-      applyFirstFeedPage(feedRegion.value);
+      const aggregate = dashboardState.regions.obs;
+      dashboardState = controllerAdapter.applyFirstFeedPage({
+        state: dashboardState,
+        response: feedRegion.value,
+        session: aggregate && aggregate.value && aggregate.value.session
+      });
     }
     dashboardViewer.renderFeed(dashboardState.feed);
     dashboardViewer.setRegionState("feed", feedRegion && feedRegion.stale

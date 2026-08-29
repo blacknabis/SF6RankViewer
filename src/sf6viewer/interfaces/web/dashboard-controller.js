@@ -70,10 +70,10 @@
     const preferences = metrics.normalizeObsOptions({ deltaMode, chartLimit });
     const source = state && typeof state === "object" ? state : {};
     const next = { ...source, preferences };
+    if (typeof render === "function") render(next);
     if (typeof persist === "function") {
       await persist(preferences.deltaMode, preferences.chartLimit);
     }
-    if (typeof render === "function") render(next);
     return next;
   }
 
@@ -103,6 +103,57 @@
       total: Number.isInteger(source.total) && source.total >= 0 ? source.total : 0,
       exhausted: source.exhausted === true,
       inFlight: source.inFlight === true
+    };
+  }
+
+  function applyFirstFeedPage({ state, response, session } = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    const current = cloneFeedState(source.feed);
+    const payload = pagePayload(response, 1);
+    if (payload.pageSize !== 25) throw new TypeError("invalid first feed page size");
+
+    const boundaryAtMs = session && Number.isInteger(session.started_at_ms)
+      ? session.started_at_ms
+      : null;
+    const previousBoundaryAtMs = Number.isInteger(source.feedBoundaryAtMs)
+      ? source.feedBoundaryAtMs
+      : null;
+    const resetBoundaryAdvanced = boundaryAtMs !== null && session.boundary_kind === "MATCH_RESET"
+      && (previousBoundaryAtMs === null || boundaryAtMs > previousBoundaryAtMs);
+    const existing = resetBoundaryAdvanced ? [] : current.items;
+    const items = metrics.mergeFeed(existing, payload.items);
+    const feed = {
+      items,
+      nextPage: resetBoundaryAdvanced ? 2 : Math.max(2, current.nextPage),
+      total: payload.total,
+      exhausted: metrics.isFeedExhausted({
+        uniqueCount: items.length,
+        total: payload.total,
+        receivedCount: payload.items.length,
+        pageSize: payload.pageSize
+      }),
+      inFlight: current.inFlight
+    };
+    return {
+      ...source,
+      feed,
+      feedBoundaryAtMs: boundaryAtMs === null ? previousBoundaryAtMs : boundaryAtMs
+    };
+  }
+
+  function systemRegionPresentation(region) {
+    const safeRegion = region && typeof region === "object" ? region : {};
+    if (safeRegion.stale === true) {
+      return safeRegion.value
+        ? { state: "error", message: "시스템 현황 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다." }
+        : { state: "error", message: "시스템 현황을 불러오지 못했습니다. 잠시 후 다시 시도합니다." };
+    }
+    const system = safeRegion.value;
+    return {
+      state: "ok",
+      message: system && system.match_count
+        ? "최신 로컬 데이터를 표시합니다."
+        : "아직 수집된 데이터가 없습니다. 로그인을 완료한 뒤 수집을 시작하세요."
     };
   }
 
@@ -176,12 +227,14 @@
 
   return {
     DEFAULT_PREFERENCES,
+    applyFirstFeedPage,
     applyObsOptions,
     applyViewerPreference,
     liveRecordingPresentation,
     loadNextFeed,
     normalizeBridgePreferences,
     normalizeTabHash,
-    refreshRegions
+    refreshRegions,
+    systemRegionPresentation
   };
 });

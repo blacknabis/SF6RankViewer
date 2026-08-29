@@ -268,8 +268,10 @@ def test_dashboard_uses_controller_adapters_preferences_and_settled_refresh() ->
 
     for contract in (
         "applyViewerPreference",
+        "applyFirstFeedPage",
         "applyObsOptions",
         "liveRecordingPresentation",
+        "systemRegionPresentation",
         "viewer_preferences",
         "set_viewer_preferences",
         "refreshRegions",

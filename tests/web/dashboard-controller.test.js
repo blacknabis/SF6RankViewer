@@ -252,7 +252,7 @@ test("browser UMD branch publishes the frozen controller global", () => {
   assert.equal(Object.isFrozen(context.SF6ViewerController), true);
 });
 
-test("applyViewerPreference persists and renders a safe preference without fetching", async () => {
+test("applyViewerPreference renders a safe preference before persisting without fetching", async () => {
   const state = Object.freeze({
     regions: { obs: { value: { marker: "last-good" }, stale: false } },
     preferences: { deltaMode: "session", chartLimit: 50 }
@@ -272,9 +272,77 @@ test("applyViewerPreference persists and renders a safe preference without fetch
 
   assert.deepEqual(next.preferences, { deltaMode: "range", chartLimit: 100 });
   assert.equal(next.regions, state.regions);
-  assert.deepEqual(calls[0], ["persist", "range", 100]);
-  assert.equal(calls[1][0], "render");
-  assert.equal(calls[1][1], next);
+  assert.equal(calls[0][0], "render");
+  assert.equal(calls[0][1], next);
+  assert.deepEqual(calls[1], ["persist", "range", 100]);
+});
+
+test("applyViewerPreference renders synchronously even when deferred persistence rejects", async () => {
+  let rejectPersistence;
+  const persistence = new Promise((_, reject) => { rejectPersistence = reject; });
+  const rendered = [];
+
+  const operation = controller.applyViewerPreference({
+    state: { preferences: { deltaMode: "session", chartLimit: 50 } },
+    deltaMode: "range",
+    chartLimit: 20,
+    render: (state) => { rendered.push(state.preferences); },
+    persist: () => persistence
+  });
+
+  assert.deepEqual(rendered, [{ deltaMode: "range", chartLimit: 20 }]);
+  rejectPersistence(new Error("disk unavailable"));
+  await assert.rejects(operation, /disk unavailable/);
+  assert.deepEqual(rendered, [{ deltaMode: "range", chartLimit: 20 }]);
+});
+
+test("applyFirstFeedPage preserves expanded history during polling and clears it after reset", () => {
+  const expanded = {
+    feedBoundaryAtMs: 1_000,
+    feed: {
+      items: [{ id: "expanded", occurred_at_ms: 100 }],
+      nextPage: 4,
+      total: 75,
+      exhausted: false,
+      inFlight: false
+    }
+  };
+  const pageOne = {
+    items: Array.from({ length: 25 }, (_, index) => ({
+      id: index === 0 ? "new" : `page-one-${index}`,
+      occurred_at_ms: 200 - index
+    })),
+    page: { page: 1, page_size: 25, total: 76 }
+  };
+
+  const polled = controller.applyFirstFeedPage({
+    state: expanded,
+    response: pageOne,
+    session: { started_at_ms: 1_000, boundary_kind: "APP_START" }
+  });
+  assert.equal(polled.feed.items[0].id, "new");
+  assert.equal(polled.feed.items.some((item) => item.id === "expanded"), true);
+  assert.equal(polled.feed.items.length, 26);
+  assert.equal(polled.feed.nextPage, 4);
+  assert.equal(polled.feed.exhausted, false);
+
+  const reset = controller.applyFirstFeedPage({
+    state: polled,
+    response: { items: [], page: { page: 1, page_size: 25, total: 0 } },
+    session: { started_at_ms: 2_000, boundary_kind: "MATCH_RESET" }
+  });
+  assert.deepEqual(reset.feed.items, []);
+  assert.equal(reset.feed.nextPage, 2);
+  assert.equal(reset.feed.total, 0);
+  assert.equal(reset.feed.exhausted, true);
+  assert.equal(reset.feedBoundaryAtMs, 2_000);
+});
+
+test("systemRegionPresentation reports a localized retry state without cached data", () => {
+  assert.deepEqual(controller.systemRegionPresentation({ stale: true, value: null }), {
+    state: "error",
+    message: "시스템 현황을 불러오지 못했습니다. 잠시 후 다시 시도합니다."
+  });
 });
 
 test("applyObsOptions renders the exact fixed loopback URL without persistence", () => {
