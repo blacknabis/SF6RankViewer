@@ -111,8 +111,7 @@ class NativeLoginBridge:
             _new_id,
         )
         self._request_lock = Lock()
-        self._auto_collection_settings_lock = Lock()
-        self._viewer_preferences_lock = Lock()
+        self._settings_lock = Lock()
         self._request_handlers: dict[str, Callable[[str], dict[str, bool | str | int]]] = {}
         self._collection_results: dict[str, dict[str, bool | str | int]] = {}
         self._coordinator = CollectionCoordinator(self._run_collection_request)
@@ -273,7 +272,7 @@ class NativeLoginBridge:
             # it for its whole request.  Stopping automatic collection must
             # persist and wake the scheduler immediately instead of making the
             # user wait for a slow Buckler response.
-            with self._auto_collection_settings_lock:
+            with self._settings_lock:
                 settings = session.get(SettingsModel, 1)
                 now_ms = _now_ms()
                 if settings is None:
@@ -313,7 +312,7 @@ class NativeLoginBridge:
         session: Session | None = None
         try:
             session = self._session_factory()
-            with self._viewer_preferences_lock:
+            with self._settings_lock:
                 settings = session.get(SettingsModel, 1)
                 if settings is None:
                     delta_mode = "session"
@@ -348,7 +347,7 @@ class NativeLoginBridge:
         session: Session | None = None
         try:
             session = self._session_factory()
-            with self._viewer_preferences_lock:
+            with self._settings_lock:
                 settings = session.get(SettingsModel, 1)
                 now_ms = _now_ms()
                 if settings is None:
@@ -383,7 +382,7 @@ class NativeLoginBridge:
         """Load a fail-closed preference for a missing singleton settings row."""
         session = self._session_factory()
         try:
-            with self._auto_collection_settings_lock:
+            with self._settings_lock:
                 settings = session.get(SettingsModel, 1)
                 if settings is None:
                     return False, int(AUTO_COLLECTION_INTERVAL_SECONDS)
@@ -476,7 +475,7 @@ class NativeLoginBridge:
         """Move the visible-history baseline without mutating immutable match evidence."""
         session = self._session_factory()
         try:
-            with self._lock, self._auto_collection_settings_lock:
+            with self._lock, self._settings_lock:
                 settings = session.get(SettingsModel, 1)
                 previous_reset_at_ms = (
                     settings.match_reset_at_ms

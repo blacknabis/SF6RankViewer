@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from pathlib import Path
+from threading import Barrier, BrokenBarrierError
+from typing import Any
 
 import pytest
 from sqlalchemy import Engine, inspect, text
@@ -18,6 +22,19 @@ from sf6viewer.infrastructure.db.engine import (
 from sf6viewer.infrastructure.db.models import Base, SettingsModel
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.runtime.desktop import NativeLoginBridge
+
+
+class _ConcurrentFirstReadSession(Session):
+    """Pause two real SQLite sessions after both observe a missing settings row."""
+
+    settings_read_barrier: Barrier
+
+    def get(self, entity: Any, ident: Any, **kwargs: Any) -> Any:
+        value = super().get(entity, ident, **kwargs)
+        if entity is SettingsModel and value is None:
+            with suppress(BrokenBarrierError):
+                self.settings_read_barrier.wait(timeout=0.5)
+        return value
 
 
 def _database(tmp_path: Path) -> tuple[AppPaths, Engine, Callable[[], Session]]:
@@ -47,7 +64,7 @@ def _assert_direct_preference_constraints(engine: Engine) -> None:
             )
 
 
-def test_viewer_preferences_default_when_settings_row_is_missing(tmp_path: Path) -> None:
+def test_viewer_preferences_default_when_settings_missing(tmp_path: Path) -> None:
     paths, engine, session_factory = _database(tmp_path)
     bridge = NativeLoginBridge(paths, session_factory)
     try:
@@ -61,7 +78,7 @@ def test_viewer_preferences_default_when_settings_row_is_missing(tmp_path: Path)
         engine.dispose()
 
 
-def test_valid_viewer_preferences_persist_across_bridge_instances(tmp_path: Path) -> None:
+def test_viewer_preferences_persist_across_bridge_instances(tmp_path: Path) -> None:
     paths, engine, session_factory = _database(tmp_path)
     bridge = NativeLoginBridge(paths, session_factory)
     try:
@@ -85,7 +102,7 @@ def test_valid_viewer_preferences_persist_across_bridge_instances(tmp_path: Path
         engine.dispose()
 
 
-def test_invalid_viewer_preferences_are_rejected_without_mutation(tmp_path: Path) -> None:
+def test_viewer_preferences_reject_invalid_values_without_mutation(tmp_path: Path) -> None:
     paths, engine, session_factory = _database(tmp_path)
     bridge = NativeLoginBridge(paths, session_factory)
     valid = {"ok": True, "delta_mode": "range", "chart_limit": 20}
@@ -105,7 +122,7 @@ def test_invalid_viewer_preferences_are_rejected_without_mutation(tmp_path: Path
         engine.dispose()
 
 
-def test_alembic_migration_and_orm_constraints_match(tmp_path: Path) -> None:
+def test_viewer_preference_migration_and_orm_constraints_match(tmp_path: Path) -> None:
     migrated_paths = AppPaths.from_root((tmp_path / "migrated-app").resolve())
     migrated_paths.ensure_directories()
     run_migrations(migrated_paths.database)
@@ -131,10 +148,54 @@ def test_alembic_migration_and_orm_constraints_match(tmp_path: Path) -> None:
     try:
         Base.metadata.create_all(orm_engine)
         constraint_names = {
-            constraint.name for constraint in SettingsModel.__table__.constraints
+            constraint.name
+            for constraint in SettingsModel.metadata.tables["settings"].constraints
         }
         assert "ck_settings_viewer_delta_mode" in constraint_names
         assert "ck_settings_viewer_chart_limit" in constraint_names
         _assert_direct_preference_constraints(orm_engine)
     finally:
         orm_engine.dispose()
+
+
+def test_concurrent_first_settings_writes_both_succeed_and_preserve_values(
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths.from_root(tmp_path.resolve())
+    paths.ensure_directories()
+    engine = create_engine_for(paths)
+    Base.metadata.create_all(engine)
+    settings_read_barrier = Barrier(2)
+
+    def racing_session_factory() -> Session:
+        session = _ConcurrentFirstReadSession(
+            bind=engine,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+        session.settings_read_barrier = settings_read_barrier
+        return session
+
+    bridge = NativeLoginBridge(paths, racing_session_factory)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            auto_future = executor.submit(bridge.set_auto_collection_enabled, True)
+            viewer_future = executor.submit(bridge.set_viewer_preferences, "range", 100)
+            auto_result = auto_future.result(timeout=3)
+            viewer_result = viewer_future.result(timeout=3)
+
+        assert auto_result["ok"] is True
+        assert viewer_result["ok"] is True
+
+        session = racing_session_factory()
+        try:
+            settings = session.get(SettingsModel, 1)
+            assert settings is not None
+            assert settings.auto_collect_enabled is True
+            assert settings.viewer_delta_mode == "range"
+            assert settings.viewer_chart_limit == 100
+        finally:
+            session.close()
+    finally:
+        bridge.close()
+        engine.dispose()
