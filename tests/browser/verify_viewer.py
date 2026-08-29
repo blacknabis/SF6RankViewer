@@ -575,6 +575,13 @@ def _exercise_manage_bridge(page: Page) -> None:
     page.locator("#matches-collect").click()
     expect(page.locator("#matches-collect")).to_have_attribute("aria-busy", "true")
     expect(page.locator("#matches-collect")).to_be_disabled()
+    # A refresh completion recomputes management availability while the native
+    # collection promise is still pending.  It must not re-enable the action or
+    # allow a second direct invocation to cross the bridge.
+    page.evaluate("refresh()")
+    expect(page.locator("#matches-collect")).to_be_disabled()
+    page.evaluate("void collectMatches()")
+    _assert_bridge_calls(page, "collect_matches", [[]])
     _release(
         page,
         "collect_matches",

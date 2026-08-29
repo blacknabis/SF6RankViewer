@@ -25,6 +25,7 @@ const COLLECTION_MESSAGES = Object.freeze({
 let refreshInFlight = false;
 let refreshQueued = false;
 let loginInFlight = false;
+let collectInFlight = false;
 let resetInFlight = false;
 let legacyCleanupInFlight = false;
 let autoCollectionInFlight = false;
@@ -168,7 +169,8 @@ function updateLoginAvailability() {
   const available = bridge !== null;
   const collectionAvailable = available && !loginInFlight && !authProbeInFlight && savedSessionVerified;
   submit.disabled = !available || loginInFlight;
-  byId("matches-collect").disabled = !collectionAvailable || typeof bridge.collect_matches !== "function";
+  byId("matches-collect").disabled = !collectionAvailable || collectInFlight
+    || typeof bridge.collect_matches !== "function";
   byId("matches-reset").disabled = !available || resetInFlight || typeof bridge.clear_matches !== "function";
   byId("legacy-quarantine-clear").disabled = !available || legacyCleanupInFlight
     || typeof bridge.ignore_legacy_quarantines !== "function";
@@ -370,12 +372,13 @@ function setMatchCollectionStatus(message) {
 }
 
 async function collectMatches() {
-  if (loginInFlight) return;
+  if (collectInFlight || loginInFlight) return;
   const bridge = nativeLoginApi();
   if (!bridge || typeof bridge.collect_matches !== "function") {
     setMatchCollectionStatus("데스크톱 수집 연결을 준비 중입니다.");
     return;
   }
+  collectInFlight = true;
   const button = byId("matches-collect");
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
@@ -398,6 +401,7 @@ async function collectMatches() {
   } catch (_) {
     setMatchCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
   } finally {
+    collectInFlight = false;
     button.removeAttribute("aria-busy");
     updateLoginAvailability();
   }
