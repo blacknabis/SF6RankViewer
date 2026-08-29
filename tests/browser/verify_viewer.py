@@ -1,0 +1,504 @@
+"""Playwright verification for the deterministic SF6Viewer browser harness.
+
+Run the harness separately, then execute this file with ``--base-url`` and an
+artifact directory.  The verifier uses the real dashboard/OBS assets and fails
+on browser errors, accessibility/state regressions, responsive overflow, or
+overlapping sibling regions.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
+
+from playwright.sync_api import BrowserContext, Locator, Page, expect, sync_playwright
+
+_FAKE_BRIDGE_SCRIPT = r"""
+(() => {
+  const calls = [];
+  const holdCounts = new Map();
+  const pending = new Map();
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+
+  function invoke(name, args, result) {
+    calls.push({ name, args: clone(args) });
+    const remaining = holdCounts.get(name) || 0;
+    if (remaining > 0) {
+      holdCounts.set(name, remaining - 1);
+      return new Promise((resolve) => {
+        const queue = pending.get(name) || [];
+        queue.push(resolve);
+        pending.set(name, queue);
+      });
+    }
+    return Promise.resolve(typeof result === "function" ? result(...args) : clone(result));
+  }
+
+  const controls = {
+    calls,
+    holdNext(name) {
+      holdCounts.set(name, (holdCounts.get(name) || 0) + 1);
+    },
+    release(name, value) {
+      const queue = pending.get(name) || [];
+      if (!queue.length) throw new Error(`No held ${name} call to release`);
+      const resolve = queue.shift();
+      pending.set(name, queue);
+      resolve(clone(value));
+    },
+    callsFor(name) {
+      return calls.filter((entry) => entry.name === name).map((entry) => clone(entry.args));
+    }
+  };
+
+  window.__bridgeTest = controls;
+  window.confirm = () => true;
+  window.pywebview = {
+    api: {
+      auth_status: (...args) => invoke("auth_status", args, {
+        ok: true, authenticated: true, user_code: "1234567890"
+      }),
+      auto_collection_status: (...args) => invoke("auto_collection_status", args, {
+        ok: true, enabled: true, interval_seconds: 30
+      }),
+      viewer_preferences: (...args) => invoke("viewer_preferences", args, {
+        ok: true, delta_mode: "session", chart_limit: 50
+      }),
+      login: (...args) => invoke("login", args, {
+        ok: true, user_code: "1234567890"
+      }),
+      set_auto_collection_enabled: (...args) => invoke(
+        "set_auto_collection_enabled", args,
+        (enabled) => ({ ok: true, enabled, interval_seconds: 30 })
+      ),
+      collect_matches: (...args) => invoke("collect_matches", args, {
+        ok: true, status: "SUCCEEDED", normalized: 55, duplicates: 0, quarantined: 1
+      }),
+      clear_matches: (...args) => invoke("clear_matches", args, {
+        ok: true, cleared: 55
+      }),
+      ignore_legacy_quarantines: (...args) => invoke("ignore_legacy_quarantines", args, {
+        ok: true, ignored: 1
+      }),
+      set_viewer_preferences: (...args) => invoke("set_viewer_preferences", args, {
+        ok: true
+      })
+    }
+  };
+})();
+"""
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base-url", required=True, help="Running deterministic harness URL")
+    parser.add_argument(
+        "--output-dir", required=True, type=Path, help="Screenshot output directory"
+    )
+    return parser.parse_args()
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def _attach_error_capture(
+    page: Page,
+    console_errors: list[str],
+    page_errors: list[str],
+) -> None:
+    page.on(
+        "console",
+        lambda message: console_errors.append(f"{page.url}: {message.text}")
+        if message.type == "error"
+        else None,
+    )
+    page.on("pageerror", lambda error: page_errors.append(f"{page.url}: {error}"))
+
+
+def _new_page(
+    context: BrowserContext,
+    console_errors: list[str],
+    page_errors: list[str],
+) -> Page:
+    page = context.new_page()
+    _attach_error_capture(page, console_errors, page_errors)
+    return page
+
+
+def _select_state(page: Page, base_url: str, state: str) -> None:
+    response = page.request.post(urljoin(base_url, f"/__test__/state/{state}"))
+    _require(response.ok, f"failed to select harness state {state}: {response.status}")
+    _require(response.json() == {"state": state}, f"unexpected state response for {state}")
+
+
+def _assert_no_horizontal_overflow(page: Page, label: str) -> None:
+    dimensions = page.evaluate(
+        """() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+          bodyWidth: document.body.scrollWidth
+        })"""
+    )
+    _require(
+        dimensions["scrollWidth"] <= dimensions["clientWidth"] + 1
+        and dimensions["bodyWidth"] <= dimensions["clientWidth"] + 1,
+        f"{label} has horizontal overflow: {dimensions}",
+    )
+
+
+def _assert_no_overlap(first: Locator, second: Locator, label: str) -> None:
+    first_box = first.bounding_box()
+    second_box = second.bounding_box()
+    _require(first_box is not None and second_box is not None, f"{label} elements are not visible")
+    assert first_box is not None and second_box is not None
+    overlap_width = min(
+        first_box["x"] + first_box["width"],
+        second_box["x"] + second_box["width"],
+    ) - max(first_box["x"], second_box["x"])
+    overlap_height = min(
+        first_box["y"] + first_box["height"], second_box["y"] + second_box["height"]
+    ) - max(first_box["y"], second_box["y"])
+    _require(
+        overlap_width <= 1 or overlap_height <= 1,
+        f"{label} overlap by {overlap_width:.1f}×{overlap_height:.1f}px",
+    )
+
+
+def _hold(page: Page, method: str) -> None:
+    page.evaluate("method => window.__bridgeTest.holdNext(method)", method)
+
+
+def _release(page: Page, method: str, result: dict[str, Any]) -> None:
+    page.evaluate(
+        "([method, result]) => window.__bridgeTest.release(method, result)",
+        [method, result],
+    )
+
+
+def _calls(page: Page, method: str) -> list[list[Any]]:
+    return page.evaluate("method => window.__bridgeTest.callsFor(method)", method)
+
+
+def _assert_bridge_call(page: Page, method: str, arguments: list[Any]) -> None:
+    calls = _calls(page, method)
+    _require(arguments in calls, f"{method}{arguments!r} not recorded; saw {calls!r}")
+
+
+def _exercise_tabs(
+    page: Page,
+    base_url: str,
+    context: BrowserContext,
+    errors: tuple[list[str], list[str]],
+) -> None:
+    expect(page.locator("#tab-viewer")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#panel-viewer")).to_be_visible()
+    _require(page.url.endswith("/#viewer"), f"default tab did not normalize URL hash: {page.url}")
+
+    page.locator("#tab-viewer").focus()
+    page.keyboard.press("ArrowRight")
+    _require(
+        page.evaluate("document.activeElement && document.activeElement.id") == "tab-manage",
+        "ArrowRight did not move tab focus",
+    )
+    expect(page.locator("#tab-viewer")).to_have_attribute("aria-selected", "true")
+    page.keyboard.press("Enter")
+    expect(page.locator("#tab-manage")).to_have_attribute("aria-selected", "true")
+    expect(page.locator("#panel-manage")).to_be_visible()
+    page.locator("#tab-viewer").click()
+    expect(page.locator("#panel-viewer")).to_be_visible()
+
+    hash_page = _new_page(context, *errors)
+    hash_page.goto(urljoin(base_url, "/#manage"), wait_until="networkidle")
+    expect(hash_page.locator("#tab-manage")).to_have_attribute("aria-selected", "true")
+    expect(hash_page.locator("#panel-manage")).to_be_visible()
+    hash_page.close()
+
+
+def _exercise_chart_and_feed(page: Page) -> None:
+    expect(page.locator("#viewer-profile-name")).to_have_text("Harness Fighter")
+    expect(page.locator("#kpi-session-delta")).to_have_text("▲ +45 MR")
+    expect(page.locator("#kpi-session-context")).to_have_text("앱 시작 기준")
+    expect(page.locator("#mr-chart-points .chart-point")).to_have_count(50)
+
+    first_point = page.locator("#mr-chart-points .chart-point").first
+    first_point.hover(force=True)
+    expect(page.locator("#mr-chart-tooltip")).to_be_visible()
+    expect(page.locator("#mr-chart-tooltip")).to_contain_text("History Rival")
+    first_point.focus()
+    expect(page.locator("#mr-chart-tooltip-status")).to_contain_text("MR")
+
+    _hold(page, "set_viewer_preferences")
+    page.locator("#chart-limit-20").click()
+    expect(page.locator("#chart-limit-20")).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#mr-chart-points .chart-point")).to_have_count(20)
+    _release(page, "set_viewer_preferences", {"ok": True})
+    _assert_bridge_call(page, "set_viewer_preferences", ["session", 20])
+
+    page.locator("#chart-limit-100").click()
+    expect(page.locator("#mr-chart-points .chart-point")).to_have_count(100)
+    _assert_bridge_call(page, "set_viewer_preferences", ["session", 100])
+
+    _hold(page, "set_viewer_preferences")
+    page.locator("#viewer-delta-mode").select_option("range")
+    expect(page.locator("#kpi-session-delta")).to_have_text("▲ +99 MR")
+    expect(page.locator("#kpi-session-context")).to_have_text("표시 구간 최근 100전")
+    _release(page, "set_viewer_preferences", {"ok": True})
+    _assert_bridge_call(page, "set_viewer_preferences", ["range", 100])
+
+    expect(page.locator("#match-feed-list .match-card")).to_have_count(25)
+    expect(page.locator("#match-feed-load-more")).to_be_visible()
+    page.locator("#match-feed-load-more").click()
+    expect(page.locator("#match-feed-list .match-card")).to_have_count(50)
+    page.locator("#match-feed-load-more").click()
+    expect(page.locator("#match-feed-list .match-card")).to_have_count(55)
+    expect(page.locator("#match-feed-load-more")).to_be_hidden()
+    expect(page.locator("#match-feed-state")).to_have_text("모든 대전 기록을 표시했습니다.")
+
+    expect(page.locator('#matchup-grid .matchup-card[data-tier="favored"]')).to_contain_text("우세")
+    expect(page.locator('#matchup-grid .matchup-card[data-tier="even"]')).to_contain_text("호각")
+    expect(
+        page.locator('#matchup-grid .matchup-card[data-tier="unfavored"]')
+    ).to_contain_text("열세")
+
+
+def _exercise_manage_bridge(page: Page) -> None:
+    page.locator("#tab-manage").click()
+    expect(page.locator("#panel-manage")).to_be_visible()
+    for selector in (
+        "#login-submit",
+        "#auto-collection-toggle",
+        "#matches-collect",
+        "#matches-reset",
+        "#legacy-quarantine-clear",
+        "#obs-url",
+    ):
+        expect(page.locator(selector)).to_be_visible()
+
+    expect(page.locator("#login-submit")).to_be_enabled()
+    expect(page.locator("#matches-collect")).to_be_enabled()
+    _assert_bridge_call(page, "auth_status", [])
+    _assert_bridge_call(page, "auto_collection_status", [])
+    _assert_bridge_call(page, "viewer_preferences", [])
+
+    page.locator("#obs-delta-mode").select_option("range")
+    page.locator("#obs-chart-limit").select_option("20")
+    expect(page.locator("#obs-url")).to_have_value(
+        "http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"
+    )
+    expect(page.locator("#viewer-delta-mode")).to_have_value("range")
+    expect(page.locator("#chart-limit-100")).to_have_attribute("aria-pressed", "true")
+
+    _hold(page, "login")
+    page.locator("#login-submit").click()
+    expect(page.locator("#login-form")).to_have_attribute("aria-busy", "true")
+    expect(page.locator("#login-submit")).to_be_disabled()
+    _release(page, "login", {"ok": True, "user_code": "1234567890"})
+    expect(page.locator("#login-form")).not_to_have_attribute("aria-busy", "true")
+    expect(page.locator("#login-submit")).to_be_enabled()
+    _assert_bridge_call(page, "login", [])
+
+    _hold(page, "set_auto_collection_enabled")
+    page.locator("#auto-collection-toggle").click()
+    expect(page.locator("#auto-collection-toggle")).to_have_attribute("aria-busy", "true")
+    expect(page.locator("#auto-collection-toggle")).to_be_disabled()
+    _release(
+        page,
+        "set_auto_collection_enabled",
+        {"ok": True, "enabled": False, "interval_seconds": 30},
+    )
+    expect(page.locator("#auto-collection-toggle")).not_to_have_attribute("aria-busy", "true")
+    expect(page.locator("#auto-collection-toggle")).to_be_enabled()
+    _assert_bridge_call(page, "set_auto_collection_enabled", [False])
+
+    _hold(page, "collect_matches")
+    page.locator("#matches-collect").click()
+    expect(page.locator("#matches-collect")).to_have_attribute("aria-busy", "true")
+    expect(page.locator("#matches-collect")).to_be_disabled()
+    _release(
+        page,
+        "collect_matches",
+        {"ok": True, "status": "SUCCEEDED", "normalized": 55, "duplicates": 0, "quarantined": 1},
+    )
+    expect(page.locator("#matches-collect")).not_to_have_attribute("aria-busy", "true")
+    expect(page.locator("#matches-collect")).to_be_enabled()
+    _assert_bridge_call(page, "collect_matches", [])
+
+    _hold(page, "clear_matches")
+    page.locator("#matches-reset").click()
+    expect(page.locator("#matches-reset")).to_have_attribute("aria-busy", "true")
+    expect(page.locator("#matches-reset")).to_be_disabled()
+    _release(page, "clear_matches", {"ok": True, "cleared": 55})
+    expect(page.locator("#matches-reset")).not_to_have_attribute("aria-busy", "true")
+    expect(page.locator("#matches-reset")).to_be_enabled()
+    _assert_bridge_call(page, "clear_matches", [])
+
+    _hold(page, "ignore_legacy_quarantines")
+    page.locator("#legacy-quarantine-clear").click()
+    expect(page.locator("#legacy-quarantine-clear")).to_have_attribute("aria-busy", "true")
+    expect(page.locator("#legacy-quarantine-clear")).to_be_disabled()
+    _release(page, "ignore_legacy_quarantines", {"ok": True, "ignored": 1})
+    expect(page.locator("#legacy-quarantine-clear")).not_to_have_attribute("aria-busy", "true")
+    expect(page.locator("#legacy-quarantine-clear")).to_be_enabled()
+    _assert_bridge_call(page, "ignore_legacy_quarantines", [])
+
+
+def _exercise_states(page: Page, base_url: str) -> None:
+    page.locator("#tab-viewer").click()
+    expect(page.locator("#viewer-profile-name")).to_have_text("Harness Fighter")
+
+    _select_state(page, base_url, "partial-error")
+    page.evaluate("refresh()")
+    expect(page.locator("#viewer-error")).to_be_visible()
+    expect(page.locator("#viewer-error")).to_contain_text("마지막 정상 데이터")
+    expect(page.locator("#viewer-profile-name")).to_have_text("Harness Fighter")
+    expect(page.locator("#mr-chart-points .chart-point")).to_have_count(100)
+
+    _select_state(page, base_url, "empty")
+    # Empty is a first-run scenario.  Reloading gives it a fresh client state;
+    # a normal refresh intentionally merges newer feed items into last-good
+    # history unless a reset boundary advances.
+    page.reload(wait_until="networkidle")
+    expect(page.locator("#viewer-error")).to_be_hidden()
+    expect(page.locator("#mr-chart-points .chart-point")).to_have_count(0)
+    expect(page.locator("#chart-empty")).to_be_visible()
+    expect(page.locator("#match-feed-empty")).to_be_visible()
+    expect(page.locator("#matchup-empty")).to_be_visible()
+
+    _select_state(page, base_url, "post-reset")
+    page.evaluate("refresh()")
+    expect(page.locator("#mr-chart-points .chart-point")).to_have_count(1)
+    page.locator("#viewer-delta-mode").select_option("session")
+    expect(page.locator("#kpi-session-delta")).to_have_text("▲ +12 MR")
+    expect(page.locator("#kpi-session-context")).to_have_text("전적 초기화 이후")
+    page.locator("#viewer-delta-mode").select_option("range")
+    expect(page.locator("#kpi-session-delta")).to_have_text("0 MR")
+    expect(page.locator("#kpi-session-context")).to_have_text("기준 데이터 1건")
+
+    _select_state(page, base_url, "populated")
+    page.evaluate("refresh()")
+    expect(page.locator("#viewer-profile-name")).to_have_text("Harness Fighter")
+
+
+def _capture_dashboard_screenshots(page: Page, output_dir: Path) -> None:
+    page.locator("#tab-viewer").click()
+    page.set_viewport_size({"width": 1280, "height": 800})
+    _assert_no_horizontal_overflow(page, "viewer 1280×800")
+    _assert_no_overlap(page.locator("#kpi-total"), page.locator("#kpi-recent"), "viewer KPI cards")
+    _assert_no_overlap(
+        page.locator(".chart-panel"), page.locator("#match-feed"), "viewer primary regions"
+    )
+    page.screenshot(path=output_dir / "viewer-1280x800.png")
+
+    page.set_viewport_size({"width": 900, "height": 600})
+    _assert_no_horizontal_overflow(page, "viewer 900×600")
+    _assert_no_overlap(
+        page.locator("#kpi-total"), page.locator("#kpi-recent"), "responsive KPI cards"
+    )
+    _assert_no_overlap(
+        page.locator(".chart-panel"), page.locator("#match-feed"), "responsive viewer regions"
+    )
+    page.screenshot(path=output_dir / "viewer-900x600.png")
+
+    page.locator("#tab-manage").click()
+    _assert_no_horizontal_overflow(page, "manage 900×600")
+    _assert_no_overlap(
+        page.locator("#login-heading").locator(".."),
+        page.locator("#obs-heading").locator(".."),
+        "manage login and OBS panels",
+    )
+    page.screenshot(path=output_dir / "manage-900x600.png")
+
+
+def _exercise_obs(
+    page: Page,
+    base_url: str,
+    output_dir: Path,
+) -> None:
+    _select_state(page, base_url, "populated")
+    page.set_viewport_size({"width": 1400, "height": 180})
+    page.goto(urljoin(base_url, "/ui/obs.html?delta=session&limit=50"), wait_until="networkidle")
+    expect(page.locator("#overlay-status")).to_have_text("연결됨")
+    expect(page.locator("#obs-mr-delta")).to_have_text("▲ +45 MR")
+    expect(page.locator("#obs-delta-context")).to_have_text("APP START")
+    _require(len(page.locator("#mr-line").get_attribute("points") or "") > 0, "OBS chart is empty")
+    _assert_no_horizontal_overflow(page, "OBS session 1400×180")
+    _assert_no_overlap(
+        page.locator(".stat-card-total"),
+        page.locator(".stat-card-recent"),
+        "OBS total/recent cards",
+    )
+    page.screenshot(path=output_dir / "obs-session-1400x180.png")
+
+    page.goto(urljoin(base_url, "/ui/obs.html?delta=range&limit=20"), wait_until="networkidle")
+    expect(page.locator("#obs-mr-delta")).to_have_text("▲ +19 MR")
+    expect(page.locator("#obs-delta-context")).to_have_text("LAST 20")
+
+    _select_state(page, base_url, "post-reset")
+    page.goto(urljoin(base_url, "/ui/obs.html?delta=session&limit=50"), wait_until="networkidle")
+    expect(page.locator("#obs-mr-delta")).to_have_text("▲ +12 MR")
+    expect(page.locator("#obs-delta-context")).to_have_text("SINCE RESET")
+
+
+def run(base_url: str, output_dir: Path) -> None:
+    base_url = base_url.rstrip("/") + "/"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    console_errors: list[str] = []
+    page_errors: list[str] = []
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        context.add_init_script(_FAKE_BRIDGE_SCRIPT)
+        page = _new_page(context, console_errors, page_errors)
+        try:
+            _select_state(page, base_url, "populated")
+            page.goto(base_url, wait_until="networkidle")
+            expect(page.locator("#connection-status")).to_have_text("로컬 서비스 연결됨")
+
+            _exercise_tabs(page, base_url, context, (console_errors, page_errors))
+            _exercise_chart_and_feed(page)
+            _exercise_manage_bridge(page)
+            _exercise_states(page, base_url)
+            _capture_dashboard_screenshots(page, output_dir)
+
+            obs_page = _new_page(context, console_errors, page_errors)
+            try:
+                _exercise_obs(obs_page, base_url, output_dir)
+            finally:
+                obs_page.close()
+        finally:
+            context.close()
+            browser.close()
+
+    _require(not console_errors, "browser console errors:\n" + "\n".join(console_errors))
+    _require(not page_errors, "browser page errors:\n" + "\n".join(page_errors))
+    expected = {
+        "viewer-1280x800.png",
+        "viewer-900x600.png",
+        "manage-900x600.png",
+        "obs-session-1400x180.png",
+    }
+    actual = {path.name for path in output_dir.glob("*.png")}
+    _require(expected <= actual, f"missing screenshots: {sorted(expected - actual)}")
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "screenshots": sorted(expected),
+                "console_errors": console_errors,
+                "page_errors": page_errors,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    arguments = _parse_args()
+    run(arguments.base_url, arguments.output_dir.resolve())
