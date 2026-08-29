@@ -89,25 +89,34 @@ class ViewerSessionTracker:
     ) -> "ViewerSessionTracker":
         """Snapshot the latest visible non-null MR for every known character."""
 
-        matches = session.scalars(
-            select(MatchModel)
+        recency_rank = func.row_number().over(
+            partition_by=MatchModel.my_character,
+            order_by=(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc()),
+        )
+        ranked_matches = (
+            select(
+                MatchModel.my_character.label("character"),
+                MatchModel.my_mr.label("mr"),
+                recency_rank.label("recency_rank"),
+            )
             .where(
                 MatchModel.account_id == 1,
                 MatchModel.occurred_at_ms > reset_at_ms,
                 MatchModel.my_mr.is_not(None),
             )
-            .order_by(
-                MatchModel.my_character.asc(),
-                MatchModel.occurred_at_ms.desc(),
-                MatchModel.id.desc(),
-            )
+            .subquery()
+        )
+        matches = session.execute(
+            select(ranked_matches.c.character, ranked_matches.c.mr)
+            .where(ranked_matches.c.recency_rank == 1)
+            .order_by(ranked_matches.c.character.asc())
         ).all()
         baselines: dict[str, int] = {}
-        for match in matches:
-            character = _normalized_character(match.my_character)
+        for raw_character, mr in matches:
+            character = _normalized_character(raw_character)
             if character is not None and character not in baselines:
-                assert match.my_mr is not None
-                baselines[character] = match.my_mr
+                assert mr is not None
+                baselines[character] = mr
         return cls(started_at_ms=started_at_ms, startup_baselines=baselines)
 
     def project(

@@ -493,7 +493,7 @@ class NativeLoginBridge:
                     )
                     or 0
                 )
-                reset_at_ms = _now_ms()
+                reset_at_ms = max(_now_ms(), previous_reset_at_ms + 1)
                 if settings is None:
                     session.add(
                         SettingsModel(

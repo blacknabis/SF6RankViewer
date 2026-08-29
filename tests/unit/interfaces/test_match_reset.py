@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ from sf6viewer.infrastructure.db.engine import create_engine_for, create_session
 from sf6viewer.infrastructure.db.models import AccountModel, Base, MatchModel, SettingsModel
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
+from sf6viewer.interfaces.runtime import desktop as desktop_module
 from sf6viewer.interfaces.runtime.desktop import NativeLoginBridge
 
 
@@ -111,3 +113,65 @@ def test_reset_hides_existing_matches_and_preserves_future_matches(tmp_path: Pat
         }
 
     engine.dispose()
+
+
+def test_clear_matches_reset_boundary_advances_when_clock_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = AppPaths.from_root(tmp_path.resolve())
+    paths.ensure_directories()
+    engine = create_engine_for(paths)
+    Base.metadata.create_all(engine)
+    session_factory = create_session_factory(engine)
+    session = session_factory()
+    try:
+        session.add(
+            AccountModel(
+                id=1,
+                user_code="1234567890",
+                display_name="Player",
+                main_character="RYU",
+                rank_name="MASTER",
+                current_mr=1500,
+                current_lp=None,
+                auth_state="VALID",
+                created_at_ms=1,
+                updated_at_ms=1,
+            )
+        )
+        session.add(SettingsModel(id=1, match_reset_at_ms=5000))
+        session.flush()
+        _add_match(session, suffix="first-visible", occurred_at_ms=5001, result="WIN")
+        session.commit()
+    finally:
+        session.close()
+
+    monkeypatch.setattr(desktop_module, "_now_ms", lambda: 4000)
+    bridge = NativeLoginBridge(paths, session_factory)
+    try:
+        assert bridge.clear_matches() == {"ok": True, "cleared": 1}
+
+        session = session_factory()
+        try:
+            settings = session.get(SettingsModel, 1)
+            assert settings is not None
+            assert settings.match_reset_at_ms == 5001
+            assert settings.updated_at_ms == 5001
+            _add_match(session, suffix="second-visible", occurred_at_ms=5002, result="LOSE")
+            session.commit()
+        finally:
+            session.close()
+
+        assert bridge.clear_matches() == {"ok": True, "cleared": 1}
+    finally:
+        bridge.close()
+
+    session = session_factory()
+    try:
+        settings = session.get(SettingsModel, 1)
+        assert settings is not None
+        assert settings.match_reset_at_ms == 5002
+        assert settings.updated_at_ms == 5002
+    finally:
+        session.close()
+        engine.dispose()
