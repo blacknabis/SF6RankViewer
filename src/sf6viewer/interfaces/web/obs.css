@@ -79,10 +79,51 @@ body {
 .stat-card-character .progress-track span { background: #1e90ff; box-shadow: 0 0 10px #1e90ff; }
 .stat-card-player .progress-track span { background: #ffa502; box-shadow: 0 0 10px #ffa502; }
 .mr-chart {
+  display: flex;
   min-width: 0;
   height: 100%;
+  flex-direction: column;
   padding: 0 4px 0 20px;
   filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .65));
+}
+.mr-chart-header {
+  display: flex;
+  min-height: 30px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 8px 0 4px;
+  text-shadow: 2px 2px 2px rgba(0, 0, 0, .95);
+}
+.mr-chart-heading {
+  color: #fff;
+  font-size: .82rem;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+}
+.mr-chart-delta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+#obs-mr-delta {
+  color: #fff;
+  font-size: 1.3rem;
+  font-weight: 900;
+}
+#obs-mr-delta.delta-positive { color: #00ffcc; }
+#obs-mr-delta.delta-negative { color: #ff4757; }
+#obs-mr-delta.delta-neutral { color: #fff; }
+#obs-delta-context {
+  color: rgba(255, 255, 255, .78);
+  font-size: .72rem;
+  font-weight: 800;
+  letter-spacing: .8px;
+}
+.mr-chart-plot {
+  min-height: 0;
+  flex: 1;
 }
 .mr-chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .chart-grid line { stroke: rgba(255, 255, 255, .14); stroke-width: 1; }

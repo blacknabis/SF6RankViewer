@@ -1,10 +1,22 @@
 "use strict";
 
+const metrics = window.SF6ViewerMetrics;
+const options = metrics.normalizeObsOptions(window.location.search);
 const POLL_INTERVAL_MS = 12_000;
 const CHART_LEFT = 4;
 const CHART_RIGHT = 382;
 const CHART_TOP = 12;
 const CHART_BOTTOM = 148;
+const EMPTY_DELTA_LABEL = "— MR";
+const ZERO_DELTA_LABEL = "0 MR";
+const DELTA_CONTEXTS = Object.freeze({
+  APP_START: "APP START",
+  MATCH_RESET: "SINCE RESET",
+  20: "LAST 20",
+  50: "LAST 50",
+  100: "LAST 100",
+  ONE_POINT: "1 POINT"
+});
 let refreshInFlight = false;
 
 const byId = (id) => document.getElementById(id);
@@ -39,6 +51,40 @@ function resetMrChart() {
   byId("mr-line").setAttribute("points", "");
   byId("mr-area").setAttribute("d", "");
   for (const id of ["mr-max", "mr-mid", "mr-min"]) byId(id).textContent = "—";
+}
+
+function deltaClass(delta) {
+  if (!finiteNumber(delta) || delta === 0) return "delta-neutral";
+  return delta > 0 ? "delta-positive" : "delta-negative";
+}
+
+function formatDelta(delta) {
+  if (!finiteNumber(delta)) return EMPTY_DELTA_LABEL;
+  if (delta === 0) return ZERO_DELTA_LABEL;
+  return metrics.deltaLabel(delta);
+}
+
+function updateMrDelta(payload) {
+  let delta = null;
+  let context = DELTA_CONTEXTS.APP_START;
+  if (options.deltaMode === "range") {
+    const range = metrics.rangeDelta(payload.mr_history, options.chartLimit);
+    delta = range.delta;
+    context = range.pointCount === 1
+      ? DELTA_CONTEXTS.ONE_POINT
+      : DELTA_CONTEXTS[options.chartLimit];
+  } else if (payload.session) {
+    delta = payload.session.delta;
+    context = payload.session.boundary_kind === "MATCH_RESET"
+      ? DELTA_CONTEXTS.MATCH_RESET
+      : DELTA_CONTEXTS.APP_START;
+  }
+
+  const deltaElement = byId("obs-mr-delta");
+  deltaElement.textContent = formatDelta(delta);
+  deltaElement.classList.remove("delta-positive", "delta-negative", "delta-neutral");
+  deltaElement.classList.add(deltaClass(delta));
+  byId("obs-delta-context").textContent = context;
 }
 
 function updateMrChart(history) {
@@ -97,7 +143,9 @@ async function refresh() {
     updateCard("recent", statistics.recent);
     updateOpponentCard("character", "VS CHAR", statistics.opponent_character);
     updateOpponentCard("player", "VS PLAYER", statistics.opponent_player);
-    updateMrChart(payload.mr_history);
+    const selectedHistory = metrics.sliceMrHistory(payload.mr_history, options.chartLimit);
+    updateMrDelta(payload);
+    updateMrChart(selectedHistory);
     byId("overlay-status").textContent = "연결됨";
   } catch (_) {
     byId("overlay-status").textContent = "로컬 서비스 연결 재시도 중";

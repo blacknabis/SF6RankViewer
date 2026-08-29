@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>SF6Viewer Match Statistics</title>
     <link rel="stylesheet" href="/ui/obs.css">
+    <script src="/ui/viewer-metrics.js" defer></script>
     <script src="/ui/obs.js" defer></script>
   </head>
   <body>
@@ -40,27 +41,36 @@
         </article>
 
         <article class="mr-chart" aria-label="최근 MR 변화">
-          <svg viewBox="0 0 440 160" preserveAspectRatio="none" role="img" aria-labelledby="mr-chart-title">
-            <title id="mr-chart-title">최근 MR 변화 그래프</title>
-            <defs>
-              <linearGradient id="mr-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stop-color="#00ffff" stop-opacity=".62"></stop>
-                <stop offset="1" stop-color="#00ffff" stop-opacity="0"></stop>
-              </linearGradient>
-            </defs>
-            <g class="chart-grid" aria-hidden="true">
-              <line x1="4" y1="12" x2="382" y2="12"></line>
-              <line x1="4" y1="80" x2="382" y2="80"></line>
-              <line x1="4" y1="148" x2="382" y2="148"></line>
-            </g>
-            <path id="mr-area" d=""></path>
-            <polyline id="mr-line" points=""></polyline>
-            <g class="chart-labels" aria-hidden="true">
-              <text id="mr-max" x="432" y="17">—</text>
-              <text id="mr-mid" x="432" y="85">—</text>
-              <text id="mr-min" x="432" y="153">—</text>
-            </g>
-          </svg>
+          <header class="mr-chart-header">
+            <span class="mr-chart-heading">MR TREND</span>
+            <span class="mr-chart-delta">
+              <strong id="obs-mr-delta" aria-label="MR 변동">— MR</strong>
+              <span id="obs-delta-context" aria-label="MR 변동 기준">APP START</span>
+            </span>
+          </header>
+          <div class="mr-chart-plot">
+            <svg viewBox="0 0 440 160" preserveAspectRatio="none" role="img" aria-labelledby="mr-chart-title">
+              <title id="mr-chart-title">최근 MR 변화 그래프</title>
+              <defs>
+                <linearGradient id="mr-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#00ffff" stop-opacity=".62"></stop>
+                  <stop offset="1" stop-color="#00ffff" stop-opacity="0"></stop>
+                </linearGradient>
+              </defs>
+              <g class="chart-grid" aria-hidden="true">
+                <line x1="4" y1="12" x2="382" y2="12"></line>
+                <line x1="4" y1="80" x2="382" y2="80"></line>
+                <line x1="4" y1="148" x2="382" y2="148"></line>
+              </g>
+              <path id="mr-area" d=""></path>
+              <polyline id="mr-line" points=""></polyline>
+              <g class="chart-labels" aria-hidden="true">
+                <text id="mr-max" x="432" y="17">—</text>
+                <text id="mr-mid" x="432" y="85">—</text>
+                <text id="mr-min" x="432" y="153">—</text>
+              </g>
+            </svg>
+          </div>
         </article>
       </section>
       <p id="overlay-status" class="visually-hidden">연결 중</p>
