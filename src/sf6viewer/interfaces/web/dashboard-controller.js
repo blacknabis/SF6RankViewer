@@ -60,6 +60,41 @@
     return { deltaMode: result.delta_mode, chartLimit: result.chart_limit };
   }
 
+  async function applyViewerPreference({
+    state,
+    deltaMode,
+    chartLimit,
+    persist,
+    render
+  } = {}) {
+    const preferences = metrics.normalizeObsOptions({ deltaMode, chartLimit });
+    const source = state && typeof state === "object" ? state : {};
+    const next = { ...source, preferences };
+    if (typeof persist === "function") {
+      await persist(preferences.deltaMode, preferences.chartLimit);
+    }
+    if (typeof render === "function") render(next);
+    return next;
+  }
+
+  function applyObsOptions({ deltaMode, chartLimit, renderUrl } = {}) {
+    const options = metrics.normalizeObsOptions({ deltaMode, chartLimit });
+    const result = { ...options, url: metrics.buildObsUrl(options) };
+    if (typeof renderUrl === "function") renderUrl(result.url);
+    return result;
+  }
+
+  function liveRecordingPresentation(autoStatus) {
+    const safe = autoStatus && autoStatus.ok === true
+      && typeof autoStatus.enabled === "boolean"
+      && Number.isInteger(autoStatus.interval_seconds)
+      && autoStatus.interval_seconds >= 30;
+    if (!safe) return { live: false, text: "자동 수집 상태 확인 불가" };
+    return autoStatus.enabled
+      ? { live: true, text: "LIVE RECORDING" }
+      : { live: false, text: "RECORDING OFF" };
+  }
+
   function cloneFeedState(state) {
     const source = state && typeof state === "object" ? state : {};
     return {
@@ -141,6 +176,9 @@
 
   return {
     DEFAULT_PREFERENCES,
+    applyObsOptions,
+    applyViewerPreference,
+    liveRecordingPresentation,
     loadNextFeed,
     normalizeBridgePreferences,
     normalizeTabHash,

@@ -251,3 +251,62 @@ test("browser UMD branch publishes the frozen controller global", () => {
   assert.equal(typeof context.SF6ViewerController.normalizeTabHash, "function");
   assert.equal(Object.isFrozen(context.SF6ViewerController), true);
 });
+
+test("applyViewerPreference persists and renders a safe preference without fetching", async () => {
+  const state = Object.freeze({
+    regions: { obs: { value: { marker: "last-good" }, stale: false } },
+    preferences: { deltaMode: "session", chartLimit: 50 }
+  });
+  const calls = [];
+
+  const next = await controller.applyViewerPreference({
+    state,
+    deltaMode: "range",
+    chartLimit: 100,
+    persist: async (deltaMode, chartLimit) => {
+      calls.push(["persist", deltaMode, chartLimit]);
+      return { ok: true };
+    },
+    render: (rendered) => { calls.push(["render", rendered]); }
+  });
+
+  assert.deepEqual(next.preferences, { deltaMode: "range", chartLimit: 100 });
+  assert.equal(next.regions, state.regions);
+  assert.deepEqual(calls[0], ["persist", "range", 100]);
+  assert.equal(calls[1][0], "render");
+  assert.equal(calls[1][1], next);
+});
+
+test("applyObsOptions renders the exact fixed loopback URL without persistence", () => {
+  let renderedUrl = null;
+
+  const result = controller.applyObsOptions({
+    deltaMode: "range",
+    chartLimit: 20,
+    renderUrl: (url) => { renderedUrl = url; }
+  });
+
+  assert.deepEqual(result, {
+    deltaMode: "range",
+    chartLimit: 20,
+    url: "http://127.0.0.1:8000/ui/obs.html?delta=range&limit=20"
+  });
+  assert.equal(renderedUrl, result.url);
+});
+
+test("liveRecordingPresentation fails closed for absent or unsafe bridge status", () => {
+  assert.deepEqual(controller.liveRecordingPresentation(null), {
+    live: false,
+    text: "자동 수집 상태 확인 불가"
+  });
+  assert.deepEqual(controller.liveRecordingPresentation({ ok: true, enabled: "yes" }), {
+    live: false,
+    text: "자동 수집 상태 확인 불가"
+  });
+  assert.deepEqual(controller.liveRecordingPresentation({
+    ok: true, enabled: true, interval_seconds: 30
+  }), { live: true, text: "LIVE RECORDING" });
+  assert.deepEqual(controller.liveRecordingPresentation({
+    ok: true, enabled: false, interval_seconds: 30
+  }), { live: false, text: "RECORDING OFF" });
+});

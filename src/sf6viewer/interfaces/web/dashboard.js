@@ -40,6 +40,15 @@ const timestamp = (value) => {
   if (!Number.isFinite(value)) return "—";
   return new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 };
+const metrics = window.SF6ViewerMetrics;
+const controllerAdapter = window.SF6ViewerController;
+const dashboardViewer = window.SF6DashboardViewer.create({ document, metrics });
+let dashboardState = {
+  regions: {},
+  preferences: { ...controllerAdapter.DEFAULT_PREFERENCES },
+  feed: { items: [], nextPage: 1, total: 0, exhausted: false, inFlight: false },
+  live: controllerAdapter.liveRecordingPresentation(null)
+};
 
 function normalizeDashboardTabHash(hash) {
   const controller = window.SF6ViewerController;
@@ -240,6 +249,23 @@ function isSafeAutoCollectionStatus(result) {
     && Number.isInteger(result.interval_seconds) && result.interval_seconds >= 30;
 }
 
+function applyAutoCollectionStatus(result) {
+  dashboardState = {
+    ...dashboardState,
+    live: controllerAdapter.liveRecordingPresentation(result)
+  };
+  if (!isSafeAutoCollectionStatus(result)) {
+    autoCollectionEnabled = null;
+    setAutoCollectionStatus("자동 수집 상태를 확인할 수 없습니다. 잠시 후 앱을 다시 시작하세요.");
+  } else {
+    autoCollectionEnabled = result.enabled;
+    const interval = number(result.interval_seconds);
+    setAutoCollectionStatus(result.enabled
+      ? `자동 전적 수집이 실행 중입니다. 최근 대전을 ${interval}초마다 확인합니다.`
+      : "자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.");
+  }
+}
+
 async function restoreAutoCollectionStatus() {
   if (autoCollectionStatusInFlight) return;
   const bridge = nativeLoginApi();
@@ -252,19 +278,9 @@ async function restoreAutoCollectionStatus() {
   updateLoginAvailability();
   try {
     const result = await bridge.auto_collection_status();
-    if (!isSafeAutoCollectionStatus(result)) {
-      autoCollectionEnabled = null;
-      setAutoCollectionStatus("자동 수집 상태를 확인할 수 없습니다. 잠시 후 앱을 다시 시작하세요.");
-      return;
-    }
-    autoCollectionEnabled = result.enabled;
-    const interval = number(result.interval_seconds);
-    setAutoCollectionStatus(result.enabled
-      ? `자동 전적 수집이 실행 중입니다. 최근 대전을 ${interval}초마다 확인합니다.`
-      : "자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.");
+    applyAutoCollectionStatus(result);
   } catch (_) {
-    autoCollectionEnabled = null;
-    setAutoCollectionStatus("자동 수집 상태를 확인할 수 없습니다. 잠시 후 앱을 다시 시작하세요.");
+    applyAutoCollectionStatus(null);
   } finally {
     autoCollectionStatusInFlight = false;
     updateLoginAvailability();
@@ -299,6 +315,11 @@ async function toggleAutoCollection() {
       return;
     }
     autoCollectionEnabled = result.enabled;
+    dashboardState = {
+      ...dashboardState,
+      live: controllerAdapter.liveRecordingPresentation(result)
+    };
+    renderViewerAggregate();
     const interval = number(result.interval_seconds);
     setAutoCollectionStatus(result.enabled
       ? `자동 전적 수집을 시작했습니다. 최근 대전을 한 번 확인한 뒤 ${interval}초마다 갱신합니다.`
@@ -425,8 +446,11 @@ async function ignoreLegacyQuarantines() {
 }
 
 function configureObsUrl() {
-  const input = byId("obs-url");
-  input.value = `${window.location.origin}/ui/obs.html`;
+  controllerAdapter.applyObsOptions({
+    deltaMode: byId("obs-delta-mode").value,
+    chartLimit: Number(byId("obs-chart-limit").value),
+    renderUrl: (url) => { byId("obs-url").value = url; }
+  });
 }
 
 async function copyObsUrl() {
@@ -549,42 +573,195 @@ function renderIngestions(items) {
   }
 }
 
-async function refresh() {
-  if (refreshInFlight) return;
-  refreshInFlight = true;
-  try {
-    const [health, system, profiles, matches, jobs, quarantines, ingestions] = await Promise.all([
-      getJson("/api/v1/health"), getJson("/api/v1/system"), getJson("/api/v1/profile-snapshots?page_size=1"),
-      getJson("/api/v1/matches/latest?page_size=1"), getJson("/api/v1/jobs?page_size=1"),
-      getJson("/api/v1/quarantine?page_size=5&status=OPEN"), getJson("/api/v1/ingestion-runs?page_size=5")
-    ]);
-    if (health.status !== "ok" || system.status !== "ok") throw new Error("로컬 서비스 상태를 확인할 수 없습니다.");
-    byId("app-version").textContent = typeof system.app_version === "string"
-      ? `v${system.app_version}`
-      : "버전 정보 없음";
+function renderViewerAggregate() {
+  const aggregate = dashboardState.regions.obs;
+  dashboardViewer.renderAggregate({
+    payload: aggregate && aggregate.value,
+    preferences: dashboardState.preferences,
+    live: dashboardState.live
+  });
+  dashboardViewer.setRegionState("aggregate", aggregate && aggregate.stale
+    ? { stale: true, message: "실시간 집계 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다." }
+    : { stale: false, message: "실시간 집계가 최신 상태입니다." });
+}
+
+function renderManagementRegions() {
+  const regions = dashboardState.regions;
+  const system = regions.system && regions.system.value;
+  if (system) {
+    byId("app-version").textContent = typeof system.app_version === "string" ? `v${system.app_version}` : "버전 정보 없음";
     byId("match-count").textContent = number(system.match_count);
     byId("profile-count").textContent = number(system.profile_snapshot_count);
     byId("running-job-count").textContent = number(system.running_job_count);
     byId("quarantine-count").textContent = number(system.open_quarantine_count);
-    renderProfile(profiles.items[0] || null);
-    renderMatch(matches.items[0] || null);
-    renderJob(jobs.items[0] || null);
-    renderQuarantine(quarantines.items);
-    renderIngestions(ingestions.items);
-    setConnection("ok", "로컬 서비스 연결됨");
-    setState("ok", system.match_count ? "최신 로컬 데이터를 표시합니다." : "아직 수집된 데이터가 없습니다. 로그인을 완료한 뒤 수집을 시작하세요.");
-    byId("last-refresh").textContent = `마지막 갱신: ${timestamp(Date.now())}`;
+    setState(regions.system.stale ? "error" : "ok", regions.system.stale
+      ? "시스템 현황 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다."
+      : system.match_count ? "최신 로컬 데이터를 표시합니다." : "아직 수집된 데이터가 없습니다. 로그인을 완료한 뒤 수집을 시작하세요.");
+  }
+  const profiles = regions.profiles && regions.profiles.value;
+  const matches = regions.manageMatches && regions.manageMatches.value;
+  const jobs = regions.jobs && regions.jobs.value;
+  const quarantines = regions.quarantines && regions.quarantines.value;
+  const ingestions = regions.ingestions && regions.ingestions.value;
+  if (profiles && Array.isArray(profiles.items)) renderProfile(profiles.items[0] || null);
+  if (matches && Array.isArray(matches.items)) renderMatch(matches.items[0] || null);
+  if (jobs && Array.isArray(jobs.items)) renderJob(jobs.items[0] || null);
+  if (quarantines && Array.isArray(quarantines.items)) renderQuarantine(quarantines.items);
+  if (ingestions && Array.isArray(ingestions.items)) renderIngestions(ingestions.items);
+  byId("last-refresh").textContent = `마지막 갱신: ${timestamp(Date.now())}`;
+}
+
+function applyFirstFeedPage(response) {
+  if (!response || !Array.isArray(response.items) || !response.page || response.page.page !== 1
+      || response.page.page_size !== 25 || !Number.isInteger(response.page.total)) {
+    throw new TypeError("invalid first feed page");
+  }
+  const items = metrics.mergeFeed(dashboardState.feed.items, response.items);
+  dashboardState = {
+    ...dashboardState,
+    feed: {
+      items,
+      nextPage: Math.max(2, dashboardState.feed.nextPage),
+      total: response.page.total,
+      exhausted: metrics.isFeedExhausted({
+        uniqueCount: items.length,
+        total: response.page.total,
+        receivedCount: response.items.length,
+        pageSize: response.page.page_size
+      }),
+      inFlight: dashboardState.feed.inFlight
+    }
+  };
+}
+
+async function restoreViewerPreferences() {
+  const bridge = nativeLoginApi();
+  let preferences = { ...controllerAdapter.DEFAULT_PREFERENCES };
+  if (bridge && typeof bridge.viewer_preferences === "function") {
+    try {
+      preferences = controllerAdapter.normalizeBridgePreferences(await bridge.viewer_preferences());
+    } catch (_) {
+      preferences = { ...controllerAdapter.DEFAULT_PREFERENCES };
+    }
+  }
+  dashboardState = { ...dashboardState, preferences };
+  renderViewerAggregate();
+}
+
+async function changeViewerPreference(changes) {
+  const requested = { ...dashboardState.preferences, ...changes };
+  const bridge = nativeLoginApi();
+  try {
+    dashboardState = await controllerAdapter.applyViewerPreference({
+      state: dashboardState,
+      deltaMode: requested.deltaMode,
+      chartLimit: requested.chartLimit,
+      persist: bridge && typeof bridge.set_viewer_preferences === "function"
+        ? async (deltaMode, chartLimit) => {
+          const result = await bridge.set_viewer_preferences(deltaMode, chartLimit);
+          if (!result || result.ok !== true) throw new Error("viewer preference rejected");
+        }
+        : undefined,
+      render: (next) => {
+        dashboardState = next;
+        renderViewerAggregate();
+      }
+    });
+  } catch (_) {
+    dashboardViewer.setRegionState("aggregate", {
+      stale: true,
+      message: "뷰어 설정을 저장하지 못했습니다. 기존 설정을 유지합니다."
+    });
+  }
+}
+
+async function loadMoreFeed() {
+  try {
+    const feed = await controllerAdapter.loadNextFeed(
+      (page) => getJson(`/api/v1/matches/latest?page=${page}&page_size=25`),
+      dashboardState.feed,
+      (transition) => {
+        dashboardState = { ...dashboardState, feed: transition };
+        dashboardViewer.renderFeed(transition);
+      }
+    );
+    dashboardState = { ...dashboardState, feed };
+  } catch (error) {
+    if (error && error.state) dashboardState = { ...dashboardState, feed: error.state };
+    dashboardViewer.renderFeed(dashboardState.feed);
+    dashboardViewer.setRegionState("feed", {
+      stale: true,
+      message: "추가 대전 기록을 불러오지 못했습니다. 다시 시도할 수 있습니다."
+    });
+  }
+}
+
+async function refresh() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  try {
+    const bridge = nativeLoginApi();
+    const refreshed = await controllerAdapter.refreshRegions({
+      health: async () => {
+        const value = await getJson("/api/v1/health");
+        if (value.status !== "ok") throw new Error("health unavailable");
+        return value;
+      },
+      system: async () => {
+        const value = await getJson("/api/v1/system");
+        if (value.status !== "ok") throw new Error("system unavailable");
+        return value;
+      },
+      profiles: () => getJson("/api/v1/profile-snapshots?page_size=1"),
+      manageMatches: () => getJson("/api/v1/matches/latest?page_size=1"),
+      jobs: () => getJson("/api/v1/jobs?page_size=1"),
+      quarantines: () => getJson("/api/v1/quarantine?page_size=5&status=OPEN"),
+      ingestions: () => getJson("/api/v1/ingestion-runs?page_size=5"),
+      obs: () => getJson("/api/v1/obs"),
+      feed: () => getJson("/api/v1/matches/latest?page=1&page_size=25"),
+      auto: bridge && typeof bridge.auto_collection_status === "function"
+        ? () => bridge.auto_collection_status()
+        : Promise.resolve(null)
+    }, dashboardState);
+    // Preferences and feed paging can change while the settled refresh is in
+    // progress. Only the independently refreshed regions are replaced here.
+    dashboardState = { ...dashboardState, regions: refreshed.regions };
+
+    const feedRegion = dashboardState.regions.feed;
+    if (feedRegion && !feedRegion.stale && !dashboardState.feed.inFlight) {
+      applyFirstFeedPage(feedRegion.value);
+    }
+    dashboardViewer.renderFeed(dashboardState.feed);
+    dashboardViewer.setRegionState("feed", feedRegion && feedRegion.stale
+      ? { stale: true, message: "대전 피드 갱신에 실패했습니다. 마지막 정상 데이터를 표시합니다." }
+      : { stale: false, message: dashboardState.feed.exhausted ? "모든 대전 기록을 표시했습니다." : `${dashboardState.feed.items.length}건 표시 중` });
+
+    const autoRegion = dashboardState.regions.auto;
+    applyAutoCollectionStatus(autoRegion && !autoRegion.stale ? autoRegion.value : null);
+    renderViewerAggregate();
+    renderManagementRegions();
+
+    const stale = Object.values(dashboardState.regions).some((region) => region && region.stale);
+    setConnection(stale ? "error" : "ok", stale ? "일부 데이터를 다시 시도하는 중" : "로컬 서비스 연결됨");
   } catch (_) {
     setConnection("error", "로컬 서비스에 연결할 수 없음");
     setState("error", "데이터를 불러오지 못했습니다. 잠시 후 다시 시도합니다.");
   } finally {
     refreshInFlight = false;
+    updateLoginAvailability();
   }
 }
 
 configureDashboardTabs();
+dashboardViewer.bindInteractions({
+  onDeltaMode: (deltaMode) => changeViewerPreference({ deltaMode }),
+  onChartLimit: (chartLimit) => changeViewerPreference({ chartLimit }),
+  onLoadMore: () => loadMoreFeed()
+});
 byId("login-form").addEventListener("submit", (event) => { void beginLogin(event); });
 byId("obs-copy").addEventListener("click", () => { void copyObsUrl(); });
+byId("obs-delta-mode").addEventListener("change", configureObsUrl);
+byId("obs-chart-limit").addEventListener("change", configureObsUrl);
 byId("auto-collection-toggle").addEventListener("click", () => { void toggleAutoCollection(); });
 byId("matches-collect").addEventListener("click", () => { void collectMatches(); });
 byId("matches-reset").addEventListener("click", () => { void clearMatches(); });
@@ -593,10 +770,13 @@ configureObsUrl();
 window.addEventListener("pywebviewready", () => {
   void restoreSavedSession();
   void restoreAutoCollectionStatus();
+  void restoreViewerPreferences();
+  void refresh();
 });
 window.setTimeout(() => {
   void restoreSavedSession();
   void restoreAutoCollectionStatus();
+  void restoreViewerPreferences();
 }, 0);
 void refresh();
 window.setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);

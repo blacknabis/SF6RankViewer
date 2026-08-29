@@ -244,3 +244,49 @@ def test_viewer_boundary_and_tab_entrypoint_contracts_are_present() -> None:
         'addEventListener("hashchange"',
     ):
         assert tab_contract in dashboard_source
+
+
+def test_dashboard_creates_the_exact_viewer_global_adapter_contract() -> None:
+    dashboard_source = (WEB_ROOT / "dashboard.js").read_text(encoding="utf-8")
+    viewer_source = (WEB_ROOT / "dashboard-viewer.js").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"SF6DashboardViewer\.create\(\{\s*document,\s*metrics\s*\}\)",
+        dashboard_source,
+    )
+    for method in (
+        "renderAggregate",
+        "renderFeed",
+        "setRegionState",
+        "bindInteractions",
+    ):
+        assert re.search(rf"\b{method}\s*\([^)]*\)\s*\{{", viewer_source)
+
+
+def test_dashboard_uses_controller_adapters_preferences_and_settled_refresh() -> None:
+    source = (WEB_ROOT / "dashboard.js").read_text(encoding="utf-8")
+
+    for contract in (
+        "applyViewerPreference",
+        "applyObsOptions",
+        "liveRecordingPresentation",
+        "viewer_preferences",
+        "set_viewer_preferences",
+        "refreshRegions",
+        'addEventListener("hashchange"',
+    ):
+        assert contract in source
+
+
+def test_dashboard_refreshes_page_one_feed_and_scheduler_status_every_cycle() -> None:
+    source = (WEB_ROOT / "dashboard.js").read_text(encoding="utf-8")
+
+    assert 'getJson("/api/v1/obs")' in source
+    assert 'getJson("/api/v1/matches/latest?page=1&page_size=25")' in source
+    refresh_body = re.search(
+        r"async function refresh\(\)\s*\{(?P<body>.*?)\n\}",
+        source,
+        re.DOTALL,
+    )
+    assert refresh_body is not None
+    assert "auto_collection_status" in refresh_body.group("body")
