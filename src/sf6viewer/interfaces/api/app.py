@@ -8,6 +8,7 @@ summaries, and authentication material so an OBS browser source can safely read
 this API without gaining access to private captured payloads.
 """
 
+import time
 from collections.abc import Callable, Iterator
 from typing import Annotated, Literal, cast
 
@@ -25,6 +26,14 @@ from sf6viewer.infrastructure.db.models import (
     ProfileSnapshotModel,
     QuarantineRecordModel,
     SettingsModel,
+)
+from sf6viewer.interfaces.api.viewer_projection import (
+    ObsMatchupSummary,
+    ObsMrPoint,
+    ObsSession,
+    ObsStreak,
+    ObsViewerProfile,
+    build_viewer_profile,
 )
 
 SessionFactory = Callable[[], Session]
@@ -218,13 +227,6 @@ class ObsStatistics(ApiModel):
     opponent_player: ObsOpponentSummary | None
 
 
-class ObsMrPoint(ApiModel):
-    """One chronological MR observation for the overlay trend line."""
-
-    occurred_at_ms: int
-    mr: int = Field(ge=0)
-
-
 class ObsResponse(ApiModel):
     """Versioned, stable-shape overlay payload for OBS browser sources.
 
@@ -235,9 +237,13 @@ class ObsResponse(ApiModel):
     schema_version: Literal["2"] = "2"
     status: Literal["ok"] = "ok"
     profile: ProfileSnapshotResponse | None
+    viewer_profile: ObsViewerProfile | None
     latest_match: MatchResponse | None
     latest_job: JobResponse | None
     statistics: ObsStatistics
+    session: ObsSession
+    streak: ObsStreak | None
+    matchups: tuple[ObsMatchupSummary, ...]
     mr_history: tuple[ObsMrPoint, ...]
 
 
@@ -366,13 +372,27 @@ def _resolve_active_character(
     return None
 
 
-def create_read_api(session_factory: SessionFactory) -> FastAPI:
+def create_read_api(
+    session_factory: SessionFactory, started_at_ms: int | None = None
+) -> FastAPI:
     """Create the v2 local read API.
 
     The caller must serve this ASGI application on a loopback address only.  No
     write route, raw-evidence route, authentication route, CORS middleware, or
     interactive documentation endpoint is registered here by design.
     """
+
+    viewer_started_at_ms = (
+        started_at_ms if started_at_ms is not None else time.time_ns() // 1_000_000
+    )
+    initial_viewer_session = ObsSession(
+        started_at_ms=viewer_started_at_ms,
+        boundary_kind="APP_START",
+        baseline_mr=None,
+        current_mr=None,
+        delta=None,
+        decisive_matches=0,
+    )
 
     app = FastAPI(
         title="SF6Viewer Local Read API",
@@ -652,6 +672,11 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
         )
         return ObsResponse(
             profile=_profile_response(latest_profile) if latest_profile is not None else None,
+            viewer_profile=build_viewer_profile(
+                latest_profile=latest_profile,
+                active_character=active_character,
+                latest_character_match=recent_matches[0] if recent_matches else None,
+            ),
             latest_match=_match_response(latest_match) if latest_match is not None else None,
             latest_job=_job_response(latest_job) if latest_job is not None else None,
             statistics=ObsStatistics(
@@ -666,8 +691,18 @@ def create_read_api(session_factory: SessionFactory) -> FastAPI:
                 opponent_character=opponent_character,
                 opponent_player=opponent_player,
             ),
+            session=initial_viewer_session,
+            streak=None,
+            matchups=(),
             mr_history=tuple(
-                ObsMrPoint(occurred_at_ms=match.occurred_at_ms, mr=cast(int, match.my_mr))
+                ObsMrPoint(
+                    match_id=match.id,
+                    occurred_at_ms=match.occurred_at_ms,
+                    mr=cast(int, match.my_mr),
+                    opponent_name=match.opponent_name,
+                    opponent_character=match.opponent_character,
+                    result=cast(MatchResult, match.result),
+                )
                 for match in reversed(mr_matches)
             ),
         )
