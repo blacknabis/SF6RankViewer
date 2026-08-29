@@ -5,12 +5,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from sf6viewer.infrastructure.db.engine import create_engine_for, create_session_factory
 from sf6viewer.infrastructure.db.models import AccountModel, Base, MatchModel, SettingsModel
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
+from sf6viewer.interfaces.api.app import _matches_with_previous_mr
 
 
 def _add_match(
@@ -94,6 +96,41 @@ def test_mr_delta_uses_same_character_predecessor_across_interleaved_characters(
         assert items[0]["id"] == "match-ryu-new"
         assert items[0]["mr_delta"] == 20
         assert client.get("/api/v1/obs").json()["latest_match"]["mr_delta"] == 20
+
+
+def test_mr_delta_uses_lower_id_at_equal_timestamp_and_bounds_predecessor_scan(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path) as (client, session):
+        _add_match(
+            session,
+            suffix="equal-a",
+            occurred_at_ms=100,
+            my_character="RYU",
+            my_mr=1500,
+        )
+        _add_match(
+            session,
+            suffix="equal-b",
+            occurred_at_ms=100,
+            my_character="RYU",
+            my_mr=1512,
+        )
+        session.commit()
+
+        items = client.get("/api/v1/matches/latest").json()["items"]
+
+        assert items[0]["id"] == "match-equal-b"
+        assert items[0]["mr_delta"] == 12
+
+        bind = session.get_bind()
+        statement = _matches_with_previous_mr(-1).limit(25)
+        sql = str(statement.compile(bind, compile_kwargs={"literal_binds": True}))
+        plan = session.execute(text(f"EXPLAIN QUERY PLAN {sql}")).all()
+        assert any(
+            "occurred_at_ms>? AND occurred_at_ms<?" in row[3]
+            for row in plan
+        )
 
 
 def test_mr_delta_skips_null_mr_predecessor(tmp_path: Path) -> None:

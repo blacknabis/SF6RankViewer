@@ -297,6 +297,7 @@ def _matches_with_previous_mr(
             previous_match.my_character == current_match.my_character,
             previous_match.my_mr.is_not(None),
             previous_match.occurred_at_ms > reset_at_ms,
+            previous_match.occurred_at_ms <= current_match.occurred_at_ms,
             or_(
                 previous_match.occurred_at_ms < current_match.occurred_at_ms,
                 and_(
