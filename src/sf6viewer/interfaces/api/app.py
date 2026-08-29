@@ -34,6 +34,9 @@ from sf6viewer.interfaces.api.viewer_projection import (
     ObsStreak,
     ObsViewerProfile,
     ViewerSessionTracker,
+    build_matchups,
+    build_mr_history,
+    build_streak,
     build_viewer_profile,
 )
 
@@ -659,19 +662,6 @@ def create_read_api(
                 losses=player_record.losses,
             )
 
-        mr_matches = list(
-            session.scalars(
-                select(MatchModel)
-                .where(
-                    MatchModel.account_id == 1,
-                    MatchModel.occurred_at_ms > reset_at_ms,
-                    MatchModel.my_mr.is_not(None),
-                    *char_filter,
-                )
-                .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
-                .limit(recent_limit)
-            ).all()
-        )
         return ObsResponse(
             profile=_profile_response(latest_profile) if latest_profile is not None else None,
             viewer_profile=build_viewer_profile(
@@ -698,18 +688,22 @@ def create_read_api(
                 active_character=active_character,
                 reset_at_ms=reset_at_ms,
             ),
-            streak=None,
-            matchups=(),
-            mr_history=tuple(
-                ObsMrPoint(
-                    match_id=match.id,
-                    occurred_at_ms=match.occurred_at_ms,
-                    mr=cast(int, match.my_mr),
-                    opponent_name=match.opponent_name,
-                    opponent_character=match.opponent_character,
-                    result=cast(MatchResult, match.result),
-                )
-                for match in reversed(mr_matches)
+            streak=build_streak(
+                session,
+                active_character=active_character,
+                reset_at_ms=reset_at_ms,
+            ),
+            matchups=build_matchups(
+                session,
+                active_character=active_character,
+                reset_at_ms=reset_at_ms,
+                limit=recent_limit,
+            ),
+            mr_history=build_mr_history(
+                session,
+                active_character=active_character,
+                reset_at_ms=reset_at_ms,
+                limit=recent_limit,
             ),
         )
 

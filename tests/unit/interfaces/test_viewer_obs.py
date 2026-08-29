@@ -20,7 +20,7 @@ from sf6viewer.infrastructure.db.models import (
     SettingsModel,
 )
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
-from sf6viewer.interfaces.api import create_read_api
+from sf6viewer.interfaces.api import create_read_api, viewer_projection
 
 
 @pytest.fixture
@@ -135,6 +135,8 @@ def _add_match(
     mr: int | None,
     lp: int | None,
     result: str = "WIN",
+    opponent_name: str | None = None,
+    opponent_character: str = "KEN",
 ) -> None:
     session.add(
         MatchModel(
@@ -148,8 +150,8 @@ def _add_match(
             my_character=character,
             my_mr=mr,
             my_lp=lp,
-            opponent_name=f"Opponent {suffix}",
-            opponent_character="KEN",
+            opponent_name=opponent_name or f"Opponent {suffix}",
+            opponent_character=opponent_character,
             opponent_mr=1500,
             opponent_lp=None,
             result=result,
@@ -773,3 +775,248 @@ def test_session_baseline_stays_immutable_for_delayed_older_post_start_draw(
         "delta": -50,
         "decisive_matches": 2,
     }
+
+
+def test_streak_reports_winning_and_losing_runs_with_draw_termination(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    app = create_read_api(session_factory, started_at_ms=1000)
+
+    with TestClient(app) as client:
+        session = session_factory()
+        try:
+            _add_match(
+                session,
+                suffix="a-draw-before-wins",
+                occurred_at_ms=200,
+                character="RYU",
+                mr=1500,
+                lp=None,
+                result="DRAW",
+            )
+            for offset in range(2):
+                _add_match(
+                    session,
+                    suffix=f"z-win-{offset}",
+                    occurred_at_ms=200 + offset,
+                    character="RYU",
+                    mr=1501 + offset,
+                    lp=None,
+                    result="WIN",
+                )
+            session.commit()
+        finally:
+            session.close()
+
+        assert _client_obs_payload(client)["streak"] == {"result": "WIN", "count": 2}
+
+        session = session_factory()
+        try:
+            _add_match(
+                session,
+                suffix="a-draw-before-losses",
+                occurred_at_ms=400,
+                character="RYU",
+                mr=1502,
+                lp=None,
+                result="DRAW",
+            )
+            for offset in range(2):
+                _add_match(
+                    session,
+                    suffix=f"z-loss-{offset}",
+                    occurred_at_ms=400 + offset,
+                    character="RYU",
+                    mr=1501 - offset,
+                    lp=None,
+                    result="LOSE",
+                )
+            session.commit()
+        finally:
+            session.close()
+
+        assert _client_obs_payload(client)["streak"] == {"result": "LOSE", "count": 2}
+
+
+def test_streak_is_not_capped_at_recent_100_matches(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        for offset in range(105):
+            _add_match(
+                session,
+                suffix=f"long-win-{offset:03d}",
+                occurred_at_ms=100 + offset,
+                character="RYU",
+                mr=1500 + offset,
+                lp=None,
+                result="WIN",
+            )
+        session.commit()
+    finally:
+        session.close()
+
+    assert _obs_payload(session_factory)["streak"] == {"result": "WIN", "count": 105}
+
+
+def test_matchup_window_uses_newest_100_decisive_matches_without_draw_slots(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="excluded-oldest-decisive",
+            occurred_at_ms=100,
+            character="RYU",
+            mr=1400,
+            lp=None,
+            result="WIN",
+            opponent_character="KEN",
+        )
+        for offset in range(100):
+            _add_match(
+                session,
+                suffix=f"included-loss-{offset:03d}",
+                occurred_at_ms=200 + offset,
+                character="RYU",
+                mr=1499 - offset,
+                lp=None,
+                result="LOSE",
+                opponent_character="GUILE",
+            )
+        _add_match(
+            session,
+            suffix="newest-draw",
+            occurred_at_ms=400,
+            character="RYU",
+            mr=1400,
+            lp=None,
+            result="DRAW",
+            opponent_character="JP",
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    assert _obs_payload(session_factory)["matchups"] == [
+        {"character": "GUILE", "wins": 0, "losses": 100, "total": 100}
+    ]
+
+
+def test_matchup_order_is_total_descending_then_character_ascending(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        occurred_at_ms = 100
+        for character, results in (
+            ("KEN", ("WIN", "WIN", "LOSE")),
+            ("AKUMA", ("WIN", "LOSE", "LOSE")),
+            ("JURI", ("WIN", "LOSE")),
+        ):
+            for index, result in enumerate(results):
+                _add_match(
+                    session,
+                    suffix=f"{character.lower()}-{index}",
+                    occurred_at_ms=occurred_at_ms,
+                    character="RYU",
+                    mr=1500,
+                    lp=None,
+                    result=result,
+                    opponent_character=character,
+                )
+                occurred_at_ms += 1
+        session.commit()
+    finally:
+        session.close()
+
+    assert _obs_payload(session_factory)["matchups"] == [
+        {"character": "AKUMA", "wins": 1, "losses": 2, "total": 3},
+        {"character": "KEN", "wins": 2, "losses": 1, "total": 3},
+        {"character": "JURI", "wins": 1, "losses": 1, "total": 2},
+    ]
+
+
+def test_history_projects_newest_100_non_null_points_chronologically_and_securely(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    history_builder = getattr(viewer_projection, "build_mr_history", None)
+    assert callable(history_builder)
+
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        for offset in range(102):
+            _add_match(
+                session,
+                suffix=f"history-{offset:03d}",
+                occurred_at_ms=100 + offset // 2,
+                character="RYU",
+                mr=1400 + offset,
+                lp=None,
+                result=("WIN", "LOSE", "DRAW")[offset % 3],
+                opponent_name=f"Source token raw auth hash {offset}",
+                opponent_character="CHUN-LI",
+            )
+        _add_match(
+            session,
+            suffix="newest-null-mr",
+            occurred_at_ms=1000,
+            character="RYU",
+            mr=None,
+            lp=None,
+            result="WIN",
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    history = _obs_payload(session_factory)["mr_history"]
+
+    assert [point["match_id"] for point in history] == [
+        f"match-history-{offset:03d}" for offset in range(2, 102)
+    ]
+    assert all(
+        list(point) == [
+            "match_id",
+            "occurred_at_ms",
+            "mr",
+            "opponent_name",
+            "opponent_character",
+            "result",
+        ]
+        for point in history
+    )
+    forbidden_keys = {
+        "account_id",
+        "auth_state",
+        "content_sha256",
+        "identity_key",
+        "identity_kind",
+        "ingestion_id",
+        "occurred_at_source",
+        "payload_json",
+        "payload_sha256",
+        "raw_record_id",
+        "source_id",
+        "source_reference",
+    }
+
+    def nested_keys(value: object) -> set[str]:
+        keys: set[str] = set()
+        if isinstance(value, dict):
+            keys.update(value)
+            for nested in value.values():
+                keys.update(nested_keys(nested))
+        elif isinstance(value, list):
+            for nested in value:
+                keys.update(nested_keys(nested))
+        return keys
+
+    assert forbidden_keys.isdisjoint(nested_keys(history))

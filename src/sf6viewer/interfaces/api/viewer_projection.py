@@ -2,13 +2,15 @@
 
 from collections.abc import Mapping
 from threading import Lock
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from sf6viewer.infrastructure.db.models import MatchModel, ProfileSnapshotModel
+
+MatchResult = Literal["WIN", "LOSE", "DRAW"]
 
 
 class ViewerApiModel(BaseModel):
@@ -206,6 +208,158 @@ def _normalized_character(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
+
+
+def build_streak(
+    session: Session,
+    *,
+    active_character: str | None,
+    reset_at_ms: int,
+    chunk_size: int = 100,
+) -> ObsStreak | None:
+    """Read the newest uninterrupted decisive run without imposing a streak cap."""
+
+    character = _normalized_character(active_character)
+    if character is None:
+        return None
+
+    streak_result: Literal["WIN", "LOSE"] | None = None
+    count = 0
+    cursor: tuple[int, str] | None = None
+
+    while True:
+        statement = select(MatchModel.result, MatchModel.occurred_at_ms, MatchModel.id).where(
+            MatchModel.account_id == 1,
+            MatchModel.occurred_at_ms > reset_at_ms,
+            MatchModel.my_character == character,
+        )
+        if cursor is not None:
+            occurred_at_ms, match_id = cursor
+            statement = statement.where(
+                or_(
+                    MatchModel.occurred_at_ms < occurred_at_ms,
+                    and_(
+                        MatchModel.occurred_at_ms == occurred_at_ms,
+                        MatchModel.id < match_id,
+                    ),
+                )
+            )
+        rows = session.execute(
+            statement.order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc()).limit(
+                chunk_size
+            )
+        ).all()
+        if not rows:
+            break
+
+        for raw_result, _, _ in rows:
+            if raw_result not in ("WIN", "LOSE"):
+                return (
+                    ObsStreak(result=streak_result, count=count)
+                    if streak_result is not None
+                    else None
+                )
+            result = cast(Literal["WIN", "LOSE"], raw_result)
+            if streak_result is None:
+                streak_result = result
+            elif result != streak_result:
+                return ObsStreak(result=streak_result, count=count)
+            count += 1
+
+        if len(rows) < chunk_size:
+            break
+        cursor = (rows[-1].occurred_at_ms, rows[-1].id)
+
+    return (
+        ObsStreak(result=streak_result, count=count) if streak_result is not None else None
+    )
+
+
+def build_matchups(
+    session: Session,
+    *,
+    active_character: str | None,
+    reset_at_ms: int,
+    limit: int = 100,
+) -> tuple[ObsMatchupSummary, ...]:
+    """Aggregate the newest decisive window by opponent character."""
+
+    character = _normalized_character(active_character)
+    if character is None:
+        return ()
+
+    rows = session.execute(
+        select(MatchModel.opponent_character, MatchModel.result)
+        .where(
+            MatchModel.account_id == 1,
+            MatchModel.occurred_at_ms > reset_at_ms,
+            MatchModel.my_character == character,
+            MatchModel.result.in_(("WIN", "LOSE")),
+        )
+        .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+        .limit(limit)
+    ).all()
+    counts: dict[str, list[int]] = {}
+    for opponent_character, result in rows:
+        wins_losses = counts.setdefault(opponent_character, [0, 0])
+        wins_losses[0 if result == "WIN" else 1] += 1
+
+    summaries = (
+        ObsMatchupSummary(
+            character=opponent_character,
+            wins=wins_losses[0],
+            losses=wins_losses[1],
+            total=sum(wins_losses),
+        )
+        for opponent_character, wins_losses in counts.items()
+    )
+    return tuple(sorted(summaries, key=lambda summary: (-summary.total, summary.character)))
+
+
+def build_mr_history(
+    session: Session,
+    *,
+    active_character: str | None,
+    reset_at_ms: int,
+    limit: int = 100,
+) -> tuple[ObsMrPoint, ...]:
+    """Project only safe fields from the newest non-null MR observations."""
+
+    character = _normalized_character(active_character)
+    if character is None:
+        return ()
+
+    rows = session.execute(
+        select(
+            MatchModel.id,
+            MatchModel.occurred_at_ms,
+            MatchModel.my_mr,
+            MatchModel.opponent_name,
+            MatchModel.opponent_character,
+            MatchModel.result,
+        )
+        .where(
+            MatchModel.account_id == 1,
+            MatchModel.occurred_at_ms > reset_at_ms,
+            MatchModel.my_character == character,
+            MatchModel.my_mr.is_not(None),
+        )
+        .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+        .limit(limit)
+    ).all()
+    return tuple(
+        ObsMrPoint(
+            match_id=match_id,
+            occurred_at_ms=occurred_at_ms,
+            mr=cast(int, mr),
+            opponent_name=opponent_name,
+            opponent_character=opponent_character,
+            result=cast(MatchResult, result),
+        )
+        for match_id, occurred_at_ms, mr, opponent_name, opponent_character, result in reversed(
+            rows
+        )
+    )
 
 
 def build_viewer_profile(
