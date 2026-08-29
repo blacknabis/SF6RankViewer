@@ -33,6 +33,7 @@ from sf6viewer.interfaces.api.viewer_projection import (
     ObsSession,
     ObsStreak,
     ObsViewerProfile,
+    ViewerSessionTracker,
     build_viewer_profile,
 )
 
@@ -385,14 +386,15 @@ def create_read_api(
     viewer_started_at_ms = (
         started_at_ms if started_at_ms is not None else time.time_ns() // 1_000_000
     )
-    initial_viewer_session = ObsSession(
-        started_at_ms=viewer_started_at_ms,
-        boundary_kind="APP_START",
-        baseline_mr=None,
-        current_mr=None,
-        delta=None,
-        decisive_matches=0,
-    )
+    seed_session = session_factory()
+    try:
+        viewer_session_tracker = ViewerSessionTracker.seeded_from(
+            seed_session,
+            started_at_ms=viewer_started_at_ms,
+            reset_at_ms=_match_reset_at_ms(seed_session),
+        )
+    finally:
+        seed_session.close()
 
     app = FastAPI(
         title="SF6Viewer Local Read API",
@@ -691,7 +693,11 @@ def create_read_api(
                 opponent_character=opponent_character,
                 opponent_player=opponent_player,
             ),
-            session=initial_viewer_session,
+            session=viewer_session_tracker.project(
+                session,
+                active_character=active_character,
+                reset_at_ms=reset_at_ms,
+            ),
             streak=None,
             matchups=(),
             mr_history=tuple(

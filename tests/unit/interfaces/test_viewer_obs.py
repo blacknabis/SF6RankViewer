@@ -17,6 +17,7 @@ from sf6viewer.infrastructure.db.models import (
     MatchModel,
     ProfileSnapshotModel,
     RawRecordModel,
+    SettingsModel,
 )
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
@@ -133,6 +134,7 @@ def _add_match(
     character: str,
     mr: int | None,
     lp: int | None,
+    result: str = "WIN",
 ) -> None:
     session.add(
         MatchModel(
@@ -150,7 +152,7 @@ def _add_match(
             opponent_character="KEN",
             opponent_mr=1500,
             opponent_lp=None,
-            result="WIN",
+            result=result,
             created_at_ms=occurred_at_ms,
         )
     )
@@ -159,6 +161,12 @@ def _add_match(
 def _obs_payload(session_factory: sessionmaker[Session]) -> dict[str, object]:
     with TestClient(create_read_api(session_factory)) as client:
         response = client.get("/api/v1/obs")
+    assert response.status_code == 200
+    return response.json()
+
+
+def _client_obs_payload(client: TestClient) -> dict[str, object]:
+    response = client.get("/api/v1/obs")
     assert response.status_code == 200
     return response.json()
 
@@ -319,4 +327,296 @@ def test_mismatched_latest_profile_and_match_character_profile_is_character_alig
         "rank_name": None,
         "mr": None,
         "lp": 21500,
+    }
+
+
+def test_session_captures_startup_baseline_and_reports_delta(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="startup",
+            occurred_at_ms=900,
+            character="RYU",
+            mr=1500,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    app = create_read_api(session_factory, started_at_ms=1000)
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="after-start",
+            occurred_at_ms=1100,
+            character="RYU",
+            mr=1525,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    with TestClient(app) as client:
+        payload = _client_obs_payload(client)
+
+    assert payload["session"] == {
+        "started_at_ms": 1000,
+        "boundary_kind": "APP_START",
+        "baseline_mr": 1500,
+        "current_mr": 1525,
+        "delta": 25,
+        "decisive_matches": 1,
+    }
+
+
+def test_session_absent_character_uses_oldest_of_multiple_arrivals_as_baseline(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    app = create_read_api(session_factory, started_at_ms=1000)
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="juri-newer",
+            occurred_at_ms=1200,
+            character="JURI",
+            mr=1430,
+            lp=None,
+        )
+        _add_match(
+            session,
+            suffix="juri-oldest",
+            occurred_at_ms=1100,
+            character="JURI",
+            mr=1400,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    with TestClient(app) as client:
+        payload = _client_obs_payload(client)
+
+    assert payload["session"] == {
+        "started_at_ms": 1000,
+        "boundary_kind": "APP_START",
+        "baseline_mr": 1400,
+        "current_mr": 1430,
+        "delta": 30,
+        "decisive_matches": 2,
+    }
+
+
+def test_session_excludes_delayed_pre_start_match_from_current_and_delta(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="startup",
+            occurred_at_ms=800,
+            character="RYU",
+            mr=1500,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    app = create_read_api(session_factory, started_at_ms=1000)
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="delayed-pre-start",
+            occurred_at_ms=900,
+            character="RYU",
+            mr=1600,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    with TestClient(app) as client:
+        payload = _client_obs_payload(client)
+
+    assert payload["session"] == {
+        "started_at_ms": 1000,
+        "boundary_kind": "APP_START",
+        "baseline_mr": 1500,
+        "current_mr": 1500,
+        "delta": 0,
+        "decisive_matches": 0,
+    }
+
+
+def test_session_includes_delayed_post_start_match(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="startup",
+            occurred_at_ms=900,
+            character="RYU",
+            mr=1500,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    app = create_read_api(session_factory, started_at_ms=1000)
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="delayed-post-start",
+            occurred_at_ms=1100,
+            character="RYU",
+            mr=1530,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    with TestClient(app) as client:
+        payload = _client_obs_payload(client)
+
+    assert payload["session"] == {
+        "started_at_ms": 1000,
+        "boundary_kind": "APP_START",
+        "baseline_mr": 1500,
+        "current_mr": 1530,
+        "delta": 30,
+        "decisive_matches": 1,
+    }
+
+
+def test_session_decisive_match_count_is_unbounded_over_recent_100(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="startup",
+            occurred_at_ms=900,
+            character="RYU",
+            mr=1500,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    app = create_read_api(session_factory, started_at_ms=1000)
+    session = session_factory()
+    try:
+        for offset in range(101):
+            _add_match(
+                session,
+                suffix=f"session-{offset:03d}",
+                occurred_at_ms=1100 + offset,
+                character="RYU",
+                mr=1501 + offset,
+                lp=None,
+                result="WIN" if offset % 2 == 0 else "LOSE",
+            )
+        session.commit()
+    finally:
+        session.close()
+
+    with TestClient(app) as client:
+        payload = _client_obs_payload(client)
+
+    assert payload["session"]["decisive_matches"] == 101
+    assert payload["session"]["baseline_mr"] == 1500
+    assert payload["session"]["current_mr"] == 1601
+
+
+def test_session_in_process_reset_clears_and_reseeds_baseline(
+    viewer_database: tuple[sessionmaker[Session], Engine],
+) -> None:
+    session_factory, _ = viewer_database
+    session = session_factory()
+    try:
+        _add_match(
+            session,
+            suffix="startup",
+            occurred_at_ms=900,
+            character="RYU",
+            mr=1500,
+            lp=None,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    app = create_read_api(session_factory, started_at_ms=1000)
+    with TestClient(app) as client:
+        session = session_factory()
+        try:
+            _add_match(
+                session,
+                suffix="before-reset",
+                occurred_at_ms=1100,
+                character="RYU",
+                mr=1520,
+                lp=None,
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        assert _client_obs_payload(client)["session"]["delta"] == 20
+
+        session = session_factory()
+        try:
+            session.add(SettingsModel(id=1, match_reset_at_ms=1200))
+            _add_match(
+                session,
+                suffix="after-reset-oldest",
+                occurred_at_ms=1300,
+                character="RYU",
+                mr=1400,
+                lp=None,
+            )
+            _add_match(
+                session,
+                suffix="after-reset-newest",
+                occurred_at_ms=1400,
+                character="RYU",
+                mr=1450,
+                lp=None,
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        payload = _client_obs_payload(client)
+
+    assert payload["session"] == {
+        "started_at_ms": 1200,
+        "boundary_kind": "MATCH_RESET",
+        "baseline_mr": 1400,
+        "current_mr": 1450,
+        "delta": 50,
+        "decisive_matches": 2,
     }

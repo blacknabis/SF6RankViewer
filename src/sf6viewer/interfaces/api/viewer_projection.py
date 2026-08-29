@@ -1,8 +1,12 @@
 """Safe, character-aligned projection models for the in-app viewer and OBS."""
 
+from collections.abc import Mapping
+from threading import Lock
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from sf6viewer.infrastructure.db.models import MatchModel, ProfileSnapshotModel
 
@@ -59,6 +63,134 @@ class ObsMrPoint(ViewerApiModel):
     opponent_name: str
     opponent_character: str
     result: Literal["WIN", "LOSE", "DRAW"]
+
+
+class ViewerSessionTracker:
+    """Track immutable per-character MR baselines for one API process."""
+
+    def __init__(
+        self,
+        *,
+        started_at_ms: int,
+        startup_baselines: Mapping[str, int],
+    ) -> None:
+        self._lock = Lock()
+        self._boundary_at_ms = started_at_ms
+        self._boundary_kind: Literal["APP_START", "MATCH_RESET"] = "APP_START"
+        self._baselines = dict(startup_baselines)
+
+    @classmethod
+    def seeded_from(
+        cls,
+        session: Session,
+        *,
+        started_at_ms: int,
+        reset_at_ms: int,
+    ) -> "ViewerSessionTracker":
+        """Snapshot the latest visible non-null MR for every known character."""
+
+        matches = session.scalars(
+            select(MatchModel)
+            .where(
+                MatchModel.account_id == 1,
+                MatchModel.occurred_at_ms > reset_at_ms,
+                MatchModel.my_mr.is_not(None),
+            )
+            .order_by(
+                MatchModel.my_character.asc(),
+                MatchModel.occurred_at_ms.desc(),
+                MatchModel.id.desc(),
+            )
+        ).all()
+        baselines: dict[str, int] = {}
+        for match in matches:
+            character = _normalized_character(match.my_character)
+            if character is not None and character not in baselines:
+                assert match.my_mr is not None
+                baselines[character] = match.my_mr
+        return cls(started_at_ms=started_at_ms, startup_baselines=baselines)
+
+    def project(
+        self,
+        session: Session,
+        *,
+        active_character: str | None,
+        reset_at_ms: int,
+    ) -> ObsSession:
+        """Project current session movement while serializing baseline transitions."""
+
+        with self._lock:
+            if reset_at_ms > self._boundary_at_ms:
+                self._boundary_at_ms = reset_at_ms
+                self._boundary_kind = "MATCH_RESET"
+                self._baselines.clear()
+
+            character = _normalized_character(active_character)
+            if character is None:
+                return self._response(
+                    baseline_mr=None,
+                    current_mr=None,
+                    decisive_matches=0,
+                )
+
+            criteria = (
+                MatchModel.account_id == 1,
+                MatchModel.my_character == character,
+                MatchModel.occurred_at_ms > self._boundary_at_ms,
+            )
+            if character not in self._baselines:
+                oldest = session.scalar(
+                    select(MatchModel)
+                    .where(*criteria, MatchModel.my_mr.is_not(None))
+                    .order_by(MatchModel.occurred_at_ms.asc(), MatchModel.id.asc())
+                    .limit(1)
+                )
+                if oldest is not None:
+                    assert oldest.my_mr is not None
+                    self._baselines[character] = oldest.my_mr
+
+            latest = session.scalar(
+                select(MatchModel)
+                .where(*criteria, MatchModel.my_mr.is_not(None))
+                .order_by(MatchModel.occurred_at_ms.desc(), MatchModel.id.desc())
+                .limit(1)
+            )
+            baseline_mr = self._baselines.get(character)
+            current_mr = latest.my_mr if latest is not None else baseline_mr
+            decisive_matches = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(MatchModel)
+                    .where(*criteria, MatchModel.result.in_(("WIN", "LOSE")))
+                )
+                or 0
+            )
+            return self._response(
+                baseline_mr=baseline_mr,
+                current_mr=current_mr,
+                decisive_matches=decisive_matches,
+            )
+
+    def _response(
+        self,
+        *,
+        baseline_mr: int | None,
+        current_mr: int | None,
+        decisive_matches: int,
+    ) -> ObsSession:
+        delta = (
+            current_mr - baseline_mr
+            if current_mr is not None and baseline_mr is not None
+            else None
+        )
+        return ObsSession(
+            started_at_ms=self._boundary_at_ms,
+            boundary_kind=self._boundary_kind,
+            baseline_mr=baseline_mr,
+            current_mr=current_mr,
+            delta=delta,
+            decisive_matches=decisive_matches,
+        )
 
 
 def _normalized_character(value: str | None) -> str | None:
