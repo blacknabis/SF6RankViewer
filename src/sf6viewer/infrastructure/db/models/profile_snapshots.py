@@ -20,9 +20,15 @@ class ProfileSnapshotModel(Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", name="fk_profile_snapshots_account_id"), nullable=False)
-    ingestion_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id", name="fk_profile_snapshots_ingestion_id"), nullable=False)
-    raw_record_id: Mapped[str] = mapped_column(ForeignKey("raw_records.id", name="fk_profile_snapshots_raw_record_id"), nullable=False)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", name="fk_profile_snapshots_account_id"), nullable=False
+    )
+    ingestion_id: Mapped[str] = mapped_column(
+        ForeignKey("ingestion_runs.id", name="fk_profile_snapshots_ingestion_id"), nullable=False
+    )
+    raw_record_id: Mapped[str] = mapped_column(
+        ForeignKey("raw_records.id", name="fk_profile_snapshots_raw_record_id"), nullable=False
+    )
     display_name: Mapped[str | None] = mapped_column(Text)
     character: Mapped[str | None] = mapped_column(Text)
     rank_name: Mapped[str | None] = mapped_column(Text)

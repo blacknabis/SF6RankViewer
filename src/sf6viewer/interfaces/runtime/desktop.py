@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 import socket
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock, RLock, Thread
@@ -61,12 +61,14 @@ from sf6viewer.infrastructure.db.engine import (
 )
 from sf6viewer.infrastructure.db.models.accounts import AccountModel
 from sf6viewer.infrastructure.db.models.ingestion_runs import IngestionRunModel
+from sf6viewer.infrastructure.db.models.jobs import JobModel
 from sf6viewer.infrastructure.db.models.matches import MatchModel
 from sf6viewer.infrastructure.db.models.profile_snapshots import ProfileSnapshotModel
 from sf6viewer.infrastructure.db.models.quarantine_records import QuarantineRecordModel
 from sf6viewer.infrastructure.db.models.raw_records import RawRecordModel
 from sf6viewer.infrastructure.db.models.settings import SettingsModel
 from sf6viewer.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from sf6viewer.infrastructure.logging import JsonlLogSink
 from sf6viewer.infrastructure.storage.app_paths import AppPaths
 from sf6viewer.interfaces.api import create_read_api
 
@@ -102,6 +104,7 @@ class NativeLoginBridge:
     def __init__(self, paths: AppPaths, session_factory: Callable[[], Session]) -> None:
         self._paths = paths
         self._session_factory = session_factory
+        self._log_sink = JsonlLogSink(paths.logs_dir)
         self._lock = RLock()
         self._uow_factory = SqlAlchemyUnitOfWorkFactory(
             session_factory,
@@ -243,13 +246,14 @@ class NativeLoginBridge:
         return self._request_collection("PROFILE")
 
     def auto_collection_status(self) -> dict[str, bool | str | int]:
-        """Return the durable automatic-collection preference without auth material."""
+        """Return the durable preference and safe collection outcomes."""
         try:
             enabled, interval_seconds = self._auto_collection_settings()
             return {
                 "ok": True,
                 "enabled": enabled,
                 "interval_seconds": interval_seconds,
+                **self._collection_outcomes(),
             }
         except Exception:
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
@@ -296,6 +300,7 @@ class NativeLoginBridge:
                 "ok": True,
                 "enabled": enabled,
                 "interval_seconds": interval_seconds,
+                **self._collection_outcomes(),
             }
         except Exception:
             session.rollback()
@@ -398,20 +403,11 @@ class NativeLoginBridge:
     ) -> dict[str, bool | str | int]:
         """Capture, preserve, and project the authenticated profile once."""
         try:
-            with self._lock:
+            with self._lock, self._collection_job(job_id, "PROFILE", collection_reason):
                 session = self._load_active_session()
                 captured = BucklerProfileCapture(_now_ms, self._capture_browser).capture(session)
                 ingestion_id = _new_id()
                 with self._uow_factory.write() as uow:
-                    uow.jobs.add(
-                        JobRecord(
-                            id=job_id, type="COLLECT", reason=collection_reason, state="RUNNING",
-                            phase="PROFILE", requested_at_ms=captured.fetched_at_ms,
-                            started_at_ms=captured.fetched_at_ms, finished_at_ms=None,
-                            progress_current=0, progress_total=1, error_code=None,
-                            diagnostic_id=None, summary_json=None,
-                        )
-                    )
                     uow.ingestions.add(
                         IngestionRecord(
                             id=ingestion_id, job_id=job_id, account_id=1, kind="LIVE",
@@ -569,19 +565,23 @@ class NativeLoginBridge:
     ) -> dict[str, bool | str | int]:
         """Capture ranked matches, preserving raw entries before strict parsing."""
         try:
-            with self._lock:
-                session, own_display_name = self._load_collection_context()
+            with self._lock, self._collection_job(job_id, "MATCHES", collection_reason):
+                try:
+                    session, own_display_name = self._load_collection_context()
+                except DomainError as error:
+                    if error.code != "DATA.IDENTITY_GROUP_INCOMPLETE":
+                        raise
+                    # Already on the browser-owning thread: run the missing
+                    # prerequisite directly without re-entering the coordinator.
+                    profile_result = self._collect_profile(
+                        _new_id(), collection_reason=collection_reason
+                    )
+                    if profile_result.get("ok") is not True:
+                        raise error_from_code(str(profile_result["code"])) from None
+                    session, own_display_name = self._load_collection_context()
                 captured = BucklerBattlelogCapture(_now_ms, self._capture_browser).capture(session)
                 ingestion_id = _new_id()
                 with self._uow_factory.write() as uow:
-                    uow.jobs.add(
-                        JobRecord(
-                            id=job_id, type="COLLECT", reason=collection_reason, state="RUNNING",
-                            phase="MATCHES", requested_at_ms=_now_ms(), started_at_ms=_now_ms(),
-                            finished_at_ms=None, progress_current=0, progress_total=len(captured),
-                            error_code=None, diagnostic_id=None, summary_json=None,
-                        )
-                    )
                     uow.ingestions.add(
                         IngestionRecord(
                             id=ingestion_id, job_id=job_id, account_id=1, kind="LIVE",
@@ -621,6 +621,133 @@ class NativeLoginBridge:
             return {"ok": False, "code": error.code}
         except Exception:
             return {"ok": False, "code": "INTERNAL.UNEXPECTED"}
+
+    @contextmanager
+    def _collection_job(self, job_id: str, phase: str, reason: str) -> Iterator[None]:
+        """Commit the attempt before capture; retain an outcome even on rollback."""
+        started_at_ms = _now_ms()
+        with self._uow_factory.write() as uow:
+            uow.jobs.add(
+                JobRecord(
+                    id=job_id, type="COLLECT", reason=reason, state="RUNNING", phase=phase,
+                    requested_at_ms=started_at_ms, started_at_ms=started_at_ms,
+                    finished_at_ms=None, progress_current=0,
+                    progress_total=1 if phase == "PROFILE" else None,
+                    error_code=None, diagnostic_id=None, summary_json=None,
+                )
+            )
+            uow.commit()
+        error_code: str | None = None
+        diagnostic_id: str | None = None
+        try:
+            yield
+        except Exception as error:
+            error_code = error.code if isinstance(error, DomainError) else "INTERNAL.UNEXPECTED"
+            diagnostic_id = _new_id()
+            raise
+        finally:
+            finished_at_ms = _now_ms()
+            # The ingestion transaction owns successful state transitions.
+            # Supplemental timestamps/logging must never turn committed data
+            # into a failed request, nor mask the original capture error.
+            with suppress(Exception):
+                self._finish_collection_job(job_id, finished_at_ms, error_code, diagnostic_id)
+            with suppress(Exception):
+                self._log_sink.write({
+                    "event": "collection_finished", "job_id": job_id, "phase": phase,
+                    "reason": reason, "finished_at_ms": finished_at_ms,
+                    "error_code": error_code, "diagnostic_id": diagnostic_id,
+                })
+
+    def _finish_collection_job(
+        self, job_id: str, finished_at_ms: int,
+        error_code: str | None, diagnostic_id: str | None,
+    ) -> None:
+        """Record a sanitized failure or supplement an already committed success."""
+        with self._session_factory() as session:
+            job = session.get(JobModel, job_id)
+            if job is None:
+                return
+            if error_code is not None and job.state == JobState.RUNNING.value:
+                job.state = JobState.FAILED.value
+                job.error_code = error_code
+                job.diagnostic_id = diagnostic_id
+            if job.state in {JobState.SUCCEEDED.value, JobState.SUCCEEDED_WITH_WARNINGS.value}:
+                ingestion = session.scalar(
+                    select(IngestionRunModel).where(IngestionRunModel.job_id == job_id)
+                )
+                if ingestion is not None:
+                    job.progress_current = ingestion.raw_count
+                    job.progress_total = ingestion.raw_count
+            job.finished_at_ms = finished_at_ms
+            session.commit()
+
+    def _collection_outcomes(self) -> dict[str, str | int]:
+        """Read committed job state without waiting for an in-flight browser call."""
+        with self._session_factory() as session:
+            jobs = select(JobModel).where(
+                JobModel.type == "COLLECT", JobModel.phase.in_({"PROFILE", "MATCHES"})
+            )
+            last_attempt = session.scalar(
+                jobs.order_by(JobModel.requested_at_ms.desc(), JobModel.id.desc()).limit(1)
+            )
+            finished_at = func.coalesce(JobModel.finished_at_ms, JobModel.started_at_ms,
+                                        JobModel.requested_at_ms)
+            last_success = session.scalar(
+                jobs.where(
+                    JobModel.phase == "MATCHES",
+                    JobModel.state.in_({"SUCCEEDED", "SUCCEEDED_WITH_WARNINGS"}),
+                ).order_by(finished_at.desc(), JobModel.id.desc()).limit(1)
+            )
+            failures = jobs.where(JobModel.state.in_({"FAILED", "INTERRUPTED"}))
+            last_success_at_ms = 0
+            if last_success is not None:
+                last_success_at_ms = (
+                    last_success.finished_at_ms or last_success.started_at_ms
+                    or last_success.requested_at_ms
+                )
+                failures = failures.where(or_(
+                    finished_at > last_success_at_ms,
+                    and_(finished_at == last_success_at_ms, JobModel.id > last_success.id),
+                ))
+            last_failure = session.scalar(
+                failures.order_by(finished_at.desc(), JobModel.id.desc()).limit(1)
+            )
+            return {
+                "last_attempt_at_ms": last_attempt.requested_at_ms if last_attempt else 0,
+                "last_success_at_ms": last_success_at_ms,
+                "last_error_code": (
+                    last_failure.error_code or "INTERNAL.UNEXPECTED" if last_failure else ""
+                ),
+            }
+
+    def _recover_interrupted_collections(self) -> None:
+        """Reconcile orphaned attempts after startup has acquired the loopback port."""
+        events: list[dict[str, object]] = []
+        recovered_at_ms = _now_ms()
+        with self._lock, self._session_factory() as session:
+            jobs = session.scalars(select(JobModel).where(
+                JobModel.type == "COLLECT",
+                JobModel.phase.in_({"PROFILE", "MATCHES"}),
+                JobModel.state.in_({JobState.QUEUED.value, JobState.RUNNING.value}),
+            ))
+            for job in jobs:
+                job.state = JobState.INTERRUPTED.value
+                job.error_code = job.error_code or "INTERNAL.UNEXPECTED"
+                job.diagnostic_id = job.diagnostic_id or _new_id()
+                if job.finished_at_ms is None:
+                    job.finished_at_ms = max(
+                        recovered_at_ms, job.requested_at_ms, job.started_at_ms or 0
+                    )
+                events.append({
+                    "event": "collection_interrupted", "job_id": job.id, "phase": job.phase,
+                    "finished_at_ms": job.finished_at_ms,
+                    "error_code": job.error_code, "diagnostic_id": job.diagnostic_id,
+                })
+            session.commit()
+        for event in events:
+            with suppress(Exception):
+                self._log_sink.write(event)
 
     def _admit_collection(
         self,
@@ -872,8 +999,8 @@ def _now_ms() -> int:
 
 
 def _new_id() -> str:
-    """Create an opaque ULID for local durable records."""
-    return str(ulid.new())
+    """Create opaque ULIDs whose ordering is stable within the same millisecond."""
+    return str(ulid.monotonic.new())
 
 
 def _wait_for_authenticated_profile(page: Page) -> None:
@@ -1082,6 +1209,9 @@ def run_desktop() -> int:
         server = LoopbackServer(application)
         server.start()
         bridge = NativeLoginBridge(paths, session_factory)
+        # Only the process owning the fixed loopback port may reconcile jobs.
+        # Keep this out of bridge construction and before starting new work.
+        bridge._recover_interrupted_collections()
         auto_collection_status = bridge.auto_collection_status()
         initial_auto_collection_enabled = auto_collection_status.get("enabled") is True
         initial_interval_seconds = auto_collection_status.get("interval_seconds")
@@ -1102,10 +1232,8 @@ def run_desktop() -> int:
         )
         return 0
     except Exception:
-        if server is not None:
-            server.stop()
-        if engine is not None:
-            engine.dispose()
+        # Retain port ownership until finally has stopped collection work.
+        # A second process must not recover jobs still owned by this scheduler.
         if _show_safe_startup_error():
             return 1
         raise

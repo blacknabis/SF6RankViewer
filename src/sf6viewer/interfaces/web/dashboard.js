@@ -283,6 +283,7 @@ function isSafeAutoCollectionStatus(result) {
 }
 
 function applyAutoCollectionStatus(result) {
+  const collectionState = controllerAdapter.autoCollectionState(result);
   dashboardState = {
     ...dashboardState,
     live: controllerAdapter.liveRecordingPresentation(result)
@@ -293,9 +294,24 @@ function applyAutoCollectionStatus(result) {
   } else {
     autoCollectionEnabled = result.enabled;
     const interval = number(result.interval_seconds);
-    setAutoCollectionStatus(result.enabled
-      ? `자동 전적 수집이 실행 중입니다. 최근 대전을 ${interval}초마다 확인합니다.`
-      : "자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.");
+    if (collectionState === "unknown") {
+      setAutoCollectionStatus("자동 수집 결과를 확인할 수 없습니다. 잠시 후 다시 확인합니다.");
+      return;
+    }
+    const successAt = result.last_success_at_ms;
+    const successText = Number.isSafeInteger(successAt) && successAt > 0 && successAt <= Date.now() + 5_000
+      ? `마지막 수집 성공: ${new Intl.DateTimeFormat("ko-KR", {
+        dateStyle: "short", timeStyle: "medium"
+      }).format(new Date(successAt))}.`
+      : "아직 수집에 성공하지 않았습니다.";
+    const messages = {
+      off: "자동 전적 수집이 중지되어 있습니다. 랭크 게임을 시작할 때 켜세요.",
+      pending: `첫 전적 수집 결과를 기다리고 있습니다. 이후 ${interval}초마다 확인합니다.`,
+      error: `최근 자동 수집에 실패했습니다. ${safeCollectionMessage(result.last_error_code)}`,
+      stale: "예정된 자동 수집이 지연되고 있습니다. 로그인 상태와 Buckler 연결을 확인하세요.",
+      live: `자동 전적 수집이 실행 중입니다. 최근 대전을 ${interval}초마다 확인합니다.`
+    };
+    setAutoCollectionStatus(`${messages[collectionState]} ${successText}`);
   }
 }
 
@@ -353,10 +369,6 @@ async function toggleAutoCollection() {
     }
     applyAutoCollectionStatus(result);
     renderViewerAggregate();
-    const interval = number(result.interval_seconds);
-    setAutoCollectionStatus(result.enabled
-      ? `자동 전적 수집을 시작했습니다. 최근 대전을 한 번 확인한 뒤 ${interval}초마다 갱신합니다.`
-      : "자동 전적 수집을 멈췄습니다. OBS에는 마지막으로 수집한 전적이 계속 표시됩니다.");
     await refresh();
   } catch (_) {
     setAutoCollectionStatus(COLLECTION_MESSAGES["INTERNAL.UNEXPECTED"]);
@@ -803,7 +815,6 @@ async function refresh() {
     const autoRegion = dashboardState.regions.auto;
     const autoResult = autoRegion && !autoRegion.stale ? autoRegion.value : null;
     if (!refreshDuringAutoMutation && autoStatusRevision.isCurrent(refreshAutoRevision)
-        && (!autoRegion || !autoRegion.stale)
         && (!autoResult || autoStatusRevision.isCurrent(autoResult.revision))) {
       applyAutoCollectionStatus(autoResult ? autoResult.status : null);
     }

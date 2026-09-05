@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol
 
 from sf6viewer.domain.events import DomainEvent
 
-
-DiagnosticIdFactory: TypeAlias = Callable[[], str]
+type DiagnosticIdFactory = Callable[[], str]
 
 
 class EventPublisher(Protocol):

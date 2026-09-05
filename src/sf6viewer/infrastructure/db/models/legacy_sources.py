@@ -15,7 +15,9 @@ class LegacySourceModel(Base):
             "state IN ('DISCOVERED', 'BACKED_UP', 'IMPORTING', 'VERIFIED', 'COMPLETED', 'FAILED')",
             name="ck_legacy_sources_state",
         ),
-        CheckConstraint("report_json IS NULL OR json_valid(report_json)", name="ck_legacy_sources_report_json"),
+        CheckConstraint(
+            "report_json IS NULL OR json_valid(report_json)", name="ck_legacy_sources_report_json"
+        ),
         UniqueConstraint("source_logical_sha256", name="uq_legacy_sources_source_logical_sha256"),
     )
 

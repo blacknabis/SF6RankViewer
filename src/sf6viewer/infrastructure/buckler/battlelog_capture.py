@@ -103,7 +103,7 @@ def normalize_battlelog_match(
             account_user_code=account_user_code.strip(),
             original_date=original_date,
             occurred_at_ms=occurred_at_ms,
-            my_name=own_display_name.strip(),
+            my_name=_required_text(mine["name"]),
             my_character=_required_text(mine["character"]),
             opponent_name=_required_text(opponent["name"]),
             opponent_character=_required_text(opponent["character"]),
@@ -114,6 +114,7 @@ def normalize_battlelog_match(
             opponent_lp=opponent_lp,
         ),
         source_id=source_id,
+        allow_legacy_profile_name=True,
     )
 
 

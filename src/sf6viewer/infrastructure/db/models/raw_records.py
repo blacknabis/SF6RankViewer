@@ -1,6 +1,14 @@
 """Immutable raw-evidence mapping."""
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, LargeBinary, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from sf6viewer.infrastructure.db.models.base import Base

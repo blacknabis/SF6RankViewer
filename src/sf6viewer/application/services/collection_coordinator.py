@@ -8,14 +8,15 @@ that performs the actual work after a request has been admitted.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from threading import Lock
 
 from sf6viewer.domain.errors import error_from_code
 
 
-class CollectionRequestKind(str, Enum):
+class CollectionRequestKind(StrEnum):
     """Kinds of work serialized by the collection coordinator."""
 
     LOGIN = "LOGIN"
@@ -24,7 +25,7 @@ class CollectionRequestKind(str, Enum):
     REPROCESS = "REPROCESS"
 
 
-class CollectionAdmission(str, Enum):
+class CollectionAdmission(StrEnum):
     """The outcome of admitting a request."""
 
     STARTED = "STARTED"
@@ -130,9 +131,12 @@ class CollectionCoordinator:
                 return self._result(CollectionAdmission.COALESCED, pending.job_id)
             if self._contains_job_id(request.job_id):
                 raise ValueError("Job ID is already active or pending.")
-            if active is not None and active.kind is CollectionRequestKind.LOGIN:
-                if request.kind is CollectionRequestKind.COLLECT:
-                    raise error_from_code("JOB.CONFLICT")
+            if (
+                active is not None
+                and active.kind is CollectionRequestKind.LOGIN
+                and request.kind is CollectionRequestKind.COLLECT
+            ):
+                raise error_from_code("JOB.CONFLICT")
             if active is None:
                 self._active = request
                 request_to_start = request
@@ -192,11 +196,9 @@ class CollectionCoordinator:
         try:
             self._executor(request)
         except Exception:
-            try:
+            # A synchronous executor may have completed the job before it failed.
+            with suppress(ValueError):
                 self.fail_to_start(request.job_id)
-            except ValueError:
-                # A synchronous executor may have completed the job before it failed.
-                pass
             raise
 
     def _contains_job_id(self, job_id: str) -> bool:

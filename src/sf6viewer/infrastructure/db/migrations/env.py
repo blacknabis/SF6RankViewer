@@ -12,7 +12,6 @@ from sqlalchemy.engine import Connection
 
 from sf6viewer.infrastructure.db.models.base import Base
 
-
 config = context.config
 
 if config.config_file_name is not None:
@@ -53,7 +52,9 @@ def _configure_context(connection: Connection | None = None, *, url: URL | None 
     if connection is not None:
         options["connection"] = connection
     elif url is not None:
-        options.update({"url": str(url), "literal_binds": True, "dialect_opts": {"paramstyle": "named"}})
+        options.update(
+            {"url": str(url), "literal_binds": True, "dialect_opts": {"paramstyle": "named"}}
+        )
     else:
         raise RuntimeError("Migration connection is required.")
     context.configure(**options)

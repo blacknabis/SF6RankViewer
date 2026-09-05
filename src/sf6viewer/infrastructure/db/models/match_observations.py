@@ -17,8 +17,14 @@ class MatchObservationModel(Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    match_id: Mapped[str] = mapped_column(ForeignKey("matches.id", name="fk_match_observations_match_id"), nullable=False)
-    raw_record_id: Mapped[str] = mapped_column(ForeignKey("raw_records.id", name="fk_match_observations_raw_record_id"), nullable=False)
-    ingestion_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id", name="fk_match_observations_ingestion_id"), nullable=False)
+    match_id: Mapped[str] = mapped_column(
+        ForeignKey("matches.id", name="fk_match_observations_match_id"), nullable=False
+    )
+    raw_record_id: Mapped[str] = mapped_column(
+        ForeignKey("raw_records.id", name="fk_match_observations_raw_record_id"), nullable=False
+    )
+    ingestion_id: Mapped[str] = mapped_column(
+        ForeignKey("ingestion_runs.id", name="fk_match_observations_ingestion_id"), nullable=False
+    )
     observed_content_sha256: Mapped[str] = mapped_column(Text, nullable=False)
     observed_at_ms: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Protocol
 
 from sf6viewer.domain.job import JobState
@@ -129,7 +129,7 @@ class ProfileSnapshotRecord:
     observed_at_ms: int
 
 
-class InsertOutcome(str, Enum):
+class InsertOutcome(StrEnum):
     """Result of inserting a match under its durable identity."""
 
     NEW = "NEW"
@@ -213,6 +213,10 @@ class RawRecordRepository(Protocol):
         """
         raise NotImplementedError
 
+    def get_original_for_match(self, match_id: str) -> RawRecord | None:
+        """Get the normalized raw evidence linked to a match's canonical hash."""
+        raise NotImplementedError
+
     def set_disposition(
         self, raw_record_id: str, disposition: str, *, disposed_at_ms: int
     ) -> None:
@@ -233,4 +237,8 @@ class ProfileSnapshotRepository(Protocol):
 
     def add(self, snapshot: ProfileSnapshotRecord) -> None:
         """Add a normalized profile snapshot to the caller's transaction."""
+        raise NotImplementedError
+
+    def list_display_names(self, account_id: int) -> list[str]:
+        """List distinct names preserved in an account's profile snapshots."""
         raise NotImplementedError

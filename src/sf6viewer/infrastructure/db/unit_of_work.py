@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from types import TracebackType
 from typing import Protocol, cast
 
@@ -28,9 +28,9 @@ from sf6viewer.domain.events import DomainEvent
 from sf6viewer.infrastructure.db.repositories.ingestions import SqlAlchemyIngestionRepository
 from sf6viewer.infrastructure.db.repositories.jobs import SqlAlchemyJobRepository
 from sf6viewer.infrastructure.db.repositories.matches import SqlAlchemyMatchRepository
+from sf6viewer.infrastructure.db.repositories.profiles import SqlAlchemyProfileSnapshotRepository
 from sf6viewer.infrastructure.db.repositories.quarantines import SqlAlchemyQuarantineRepository
 from sf6viewer.infrastructure.db.repositories.raw_records import SqlAlchemyRawRecordRepository
-from sf6viewer.infrastructure.db.repositories.profiles import SqlAlchemyProfileSnapshotRepository
 
 _READ_ONLY_MESSAGE = "read unit of work is read-only"
 
@@ -192,14 +192,12 @@ class SqlAlchemyUnitOfWork:
         try:
             self._publisher.publish(tuple(self._events))
         except Exception:
-            try:
+            # A post-commit warning must not alter committed data or escape it.
+            with suppress(Exception):
                 self._warning_sink.warn(
                     "EVENT_PUBLISH_FAILED",
                     diagnostic_id=self._diagnostic_id_factory(),
                 )
-            except Exception:
-                # A post-commit warning mechanism must not alter committed data or escape it.
-                pass
         finally:
             self._events.clear()
 

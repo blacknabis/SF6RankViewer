@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
@@ -31,6 +31,8 @@ class SqlAlchemyMatchRepository:
             index_elements=["account_id", "identity_key"]
         )
         result = self._session.execute(statement)
+        if not isinstance(result, CursorResult):
+            raise RuntimeError("match insert did not return a cursor result")
         if result.rowcount == 1:
             return InsertOutcome.NEW
 

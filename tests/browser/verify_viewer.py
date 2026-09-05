@@ -38,6 +38,12 @@ _FAKE_BRIDGE_SCRIPT_TEMPLATE = r"""
   const holdCounts = new Map();
   const pending = new Map();
   const clone = (value) => JSON.parse(JSON.stringify(value));
+  let autoStatus = {
+    ok: true, enabled: true, interval_seconds: 30,
+    last_attempt_at_ms: frozenNow - 5_000,
+    last_success_at_ms: frozenNow - 1_000,
+    last_error_code: ""
+  };
   for (const method of new URLSearchParams(window.location.search).getAll("bridge_hold")) {
     holdCounts.set(method, (holdCounts.get(method) || 0) + 1);
   }
@@ -59,6 +65,7 @@ _FAKE_BRIDGE_SCRIPT_TEMPLATE = r"""
 
   const controls = {
     calls,
+    setAutoStatus(status) { autoStatus = clone(status); },
     holdNext(name) {
       holdCounts.set(name, (holdCounts.get(name) || 0) + 1);
     },
@@ -87,9 +94,7 @@ _FAKE_BRIDGE_SCRIPT_TEMPLATE = r"""
       auth_status: (...args) => invoke("auth_status", args, {
         ok: true, authenticated: true, user_code: "1234567890"
       }),
-      auto_collection_status: (...args) => invoke("auto_collection_status", args, {
-        ok: true, enabled: true, interval_seconds: 30
-      }),
+      auto_collection_status: (...args) => invoke("auto_collection_status", args, () => autoStatus),
       viewer_preferences: (...args) => invoke("viewer_preferences", args, {
         ok: true, delta_mode: "session", chart_limit: 50
       }),
@@ -98,7 +103,7 @@ _FAKE_BRIDGE_SCRIPT_TEMPLATE = r"""
       }),
       set_auto_collection_enabled: (...args) => invoke(
         "set_auto_collection_enabled", args,
-        (enabled) => ({ ok: true, enabled, interval_seconds: 30 })
+        (enabled) => ({ ...autoStatus, enabled })
       ),
       collect_matches: (...args) => invoke("collect_matches", args, {
         ok: true, status: "SUCCEEDED", normalized: 55, duplicates: 0, quarantined: 1
@@ -390,7 +395,12 @@ def _exercise_bridge_status_promises(
         (
             "auto_collection_status",
             "#auto-collection-toggle",
-            {"ok": True, "enabled": True, "interval_seconds": 30},
+            {
+                "ok": True, "enabled": True, "interval_seconds": 30,
+                "last_attempt_at_ms": FROZEN_BROWSER_NOW_MS - 5_000,
+                "last_success_at_ms": FROZEN_BROWSER_NOW_MS - 1_000,
+                "last_error_code": "",
+            },
         ),
         (
             "viewer_preferences",
@@ -443,6 +453,96 @@ def _exercise_bridge_status_promises(
                 expect(status_page.locator("#mr-chart-points .chart-point")).to_have_count(20)
         finally:
             status_page.close()
+
+
+def _exercise_collection_health(
+    context: BrowserContext,
+    base_url: str,
+    errors: tuple[list[str], list[str]],
+) -> None:
+    status_page = _new_page(context, *errors)
+    healthy = {
+        "ok": True, "enabled": True, "interval_seconds": 30,
+        "last_attempt_at_ms": FROZEN_BROWSER_NOW_MS - 5_000,
+        "last_success_at_ms": FROZEN_BROWSER_NOW_MS - 1_000,
+        "last_error_code": "",
+    }
+    scenarios = (
+        (
+            {**healthy, "last_attempt_at_ms": 0, "last_success_at_ms": 0},
+            "첫 수집 대기 중", "첫 전적 수집 결과를 기다리고 있습니다.", False,
+        ),
+        (
+            {
+                **healthy, "last_attempt_at_ms": FROZEN_BROWSER_NOW_MS,
+                "last_success_at_ms": 0, "last_error_code": "SESSION.EXPIRED",
+            },
+            "수집 오류", "로그인 세션이 만료되었습니다.", False,
+        ),
+        (healthy, "LIVE RECORDING", "마지막 수집 성공:", True),
+        (
+            {
+                **healthy, "last_attempt_at_ms": FROZEN_BROWSER_NOW_MS,
+                "last_error_code": "UPSTREAM.UNAVAILABLE",
+            },
+            "수집 오류", "Buckler 프로필 페이지에 연결할 수 없습니다.", False,
+        ),
+        (healthy, "LIVE RECORDING", "자동 전적 수집이 실행 중입니다.", True),
+        (
+            {
+                **healthy, "last_attempt_at_ms": FROZEN_BROWSER_NOW_MS - 100_000,
+                "last_success_at_ms": FROZEN_BROWSER_NOW_MS - 95_000,
+            },
+            "수집 지연", "예정된 자동 수집이 지연되고 있습니다.", False,
+        ),
+        (
+            {
+                **healthy, "last_attempt_at_ms": FROZEN_BROWSER_NOW_MS,
+                "last_error_code": "PRIVATE_ERROR_DETAIL",
+            },
+            "수집 오류", "수집을 완료할 수 없습니다.", False,
+        ),
+        (
+            {**healthy, "enabled": False},
+            "RECORDING OFF", "자동 전적 수집이 중지되어 있습니다.", False,
+        ),
+        (
+            {**healthy, "last_success_at_ms": "invalid"},
+            "자동 수집 상태 확인 불가", "자동 수집 결과를 확인할 수 없습니다.", False,
+        ),
+    )
+    try:
+        status_page.goto(base_url, wait_until="networkidle")
+        for status, badge, message, live in scenarios:
+            status_page.evaluate(
+                "async status => { window.__bridgeTest.setAutoStatus(status); await refresh(); }",
+                status,
+            )
+            expect(status_page.locator("#viewer-live-badge")).to_have_text(badge)
+            expect(status_page.locator("#viewer-live-badge")).to_have_attribute(
+                "data-live", str(live).lower()
+            )
+            expect(status_page.locator("#auto-collection-status")).to_contain_text(message)
+            expect(status_page.locator("#auto-collection-status")).not_to_contain_text(
+                "PRIVATE_ERROR_DETAIL"
+            )
+
+        # Losing the bridge must clear a previously healthy recording claim.
+        status_page.evaluate(
+            "async status => { window.__bridgeTest.setAutoStatus(status); await refresh(); }",
+            healthy,
+        )
+        status_page.evaluate("""async () => {
+          window.pywebview.api.auto_collection_status = () =>
+            Promise.reject(new Error("unavailable"));
+          await refresh();
+        }""")
+        expect(status_page.locator("#viewer-live-badge")).to_have_attribute("data-live", "false")
+        expect(status_page.locator("#auto-collection-status")).to_contain_text(
+            "자동 수집 상태를 확인할 수 없습니다."
+        )
+    finally:
+        status_page.close()
 
 
 def _exercise_chart_and_feed(page: Page) -> None:
@@ -797,6 +897,9 @@ def run(base_url: str, output_dir: Path) -> None:
 
             _exercise_tabs(page, base_url, context, (console_errors, page_errors))
             _exercise_bridge_status_promises(
+                context, base_url, (console_errors, page_errors)
+            )
+            _exercise_collection_health(
                 context, base_url, (console_errors, page_errors)
             )
             _exercise_chart_and_feed(page)

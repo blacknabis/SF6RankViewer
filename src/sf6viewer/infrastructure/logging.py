@@ -2,8 +2,8 @@
 
 import errno
 import json
-import os
 import re
+import sys
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
@@ -65,7 +65,7 @@ class _InterprocessFileLock:
     def _try_acquire(self) -> bool:
         if self._file is None:
             raise RuntimeError("JSONL log lock file was not opened.")
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             try:
@@ -93,7 +93,7 @@ class _InterprocessFileLock:
     def _release(self) -> None:
         if self._file is None:
             raise RuntimeError("JSONL log lock file was not opened.")
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             self._file.seek(0)

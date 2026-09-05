@@ -48,7 +48,9 @@ def _obs() -> _ObsParser:
 def test_obs_loads_shared_metrics_before_overlay_entrypoint() -> None:
     obs = _obs()
 
-    assert obs.scripts == ["/ui/viewer-metrics.js", "/ui/obs.js"]
+    assert obs.scripts == [
+        "/ui/viewer-metrics.js", "/ui/dashboard-controller.js", "/ui/obs.js"
+    ]
 
 
 def test_obs_chart_header_exposes_delta_and_context_bindings() -> None:
