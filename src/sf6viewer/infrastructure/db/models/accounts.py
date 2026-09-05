@@ -13,11 +13,16 @@ class AccountModel(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_accounts_singleton_id"),
         CheckConstraint(
-            "length(user_code) = 10 AND user_code GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'",
+            "length(user_code) = 10 AND user_code GLOB "
+            "'[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'",
             name="ck_accounts_user_code_canonical",
         ),
-        CheckConstraint("current_mr IS NULL OR current_mr >= 0", name="ck_accounts_current_mr_nonnegative"),
-        CheckConstraint("current_lp IS NULL OR current_lp >= 0", name="ck_accounts_current_lp_nonnegative"),
+        CheckConstraint(
+            "current_mr IS NULL OR current_mr >= 0", name="ck_accounts_current_mr_nonnegative"
+        ),
+        CheckConstraint(
+            "current_lp IS NULL OR current_lp >= 0", name="ck_accounts_current_lp_nonnegative"
+        ),
         CheckConstraint(
             "auth_state IN ('MISSING', 'VALID', 'EXPIRED', 'MISMATCH')",
             name="ck_accounts_auth_state",

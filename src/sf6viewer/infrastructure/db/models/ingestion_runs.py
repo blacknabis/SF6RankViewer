@@ -11,7 +11,9 @@ class IngestionRunModel(Base):
 
     __tablename__ = "ingestion_runs"
     __table_args__ = (
-        CheckConstraint("kind IN ('LIVE', 'LEGACY_IMPORT', 'REPROCESS')", name="ck_ingestion_runs_kind"),
+        CheckConstraint(
+            "kind IN ('LIVE', 'LEGACY_IMPORT', 'REPROCESS')", name="ck_ingestion_runs_kind"
+        ),
         CheckConstraint(
             "state IN ('FETCHING', 'RAW_COMMITTED', 'NORMALIZING', 'COMPLETED', "
             "'COMPLETED_WITH_WARNINGS', 'FAILED', 'INTERRUPTED')",
@@ -22,8 +24,12 @@ class IngestionRunModel(Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", name="fk_ingestion_runs_job_id"), nullable=False)
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", name="fk_ingestion_runs_account_id"))
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", name="fk_ingestion_runs_job_id"), nullable=False
+    )
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", name="fk_ingestion_runs_account_id")
+    )
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     parser_version: Mapped[str] = mapped_column(Text, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False)

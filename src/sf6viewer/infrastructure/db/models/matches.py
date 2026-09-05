@@ -18,8 +18,12 @@ class MatchModel(Base):
         ),
         CheckConstraint("my_mr IS NULL OR my_mr >= 0", name="ck_matches_my_mr_nonnegative"),
         CheckConstraint("my_lp IS NULL OR my_lp >= 0", name="ck_matches_my_lp_nonnegative"),
-        CheckConstraint("opponent_mr IS NULL OR opponent_mr >= 0", name="ck_matches_opponent_mr_nonnegative"),
-        CheckConstraint("opponent_lp IS NULL OR opponent_lp >= 0", name="ck_matches_opponent_lp_nonnegative"),
+        CheckConstraint(
+            "opponent_mr IS NULL OR opponent_mr >= 0", name="ck_matches_opponent_mr_nonnegative"
+        ),
+        CheckConstraint(
+            "opponent_lp IS NULL OR opponent_lp >= 0", name="ck_matches_opponent_lp_nonnegative"
+        ),
         CheckConstraint("result IN ('WIN', 'LOSE', 'DRAW')", name="ck_matches_result"),
         CheckConstraint(
             "length(trim(my_character)) > 0",
@@ -36,7 +40,9 @@ class MatchModel(Base):
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", name="fk_matches_account_id"), nullable=False)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", name="fk_matches_account_id"), nullable=False
+    )
     identity_key: Mapped[str] = mapped_column(Text, nullable=False)
     identity_kind: Mapped[str] = mapped_column(Text, nullable=False)
     content_sha256: Mapped[str] = mapped_column(Text, nullable=False)

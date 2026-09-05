@@ -11,7 +11,9 @@ class JobModel(Base):
 
     __tablename__ = "jobs"
     __table_args__ = (
-        CheckConstraint("type IN ('LOGIN', 'COLLECT', 'MIGRATE', 'REPROCESS')", name="ck_jobs_type"),
+        CheckConstraint(
+            "type IN ('LOGIN', 'COLLECT', 'MIGRATE', 'REPROCESS')", name="ck_jobs_type"
+        ),
         CheckConstraint(
             "reason IN ('STARTUP', 'MANUAL', 'SCHEDULED', 'RECOVERY')", name="ck_jobs_reason"
         ),
@@ -20,7 +22,9 @@ class JobModel(Base):
             "'FAILED', 'CANCELLED', 'INTERRUPTED')",
             name="ck_jobs_state",
         ),
-        CheckConstraint("summary_json IS NULL OR json_valid(summary_json)", name="ck_jobs_summary_json"),
+        CheckConstraint(
+            "summary_json IS NULL OR json_valid(summary_json)", name="ck_jobs_summary_json"
+        ),
         Index("ix_jobs_state_requested_at_ms", "state", "requested_at_ms"),
     )
 

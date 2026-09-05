@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TypeAlias
 
-
-JsonValue: TypeAlias = (
+type JsonValue = (
     str | int | float | bool | None | list["JsonValue"] | Mapping[str, "JsonValue"]
 )
 

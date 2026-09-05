@@ -7,10 +7,10 @@ import binascii
 import ctypes
 import json
 import sys
-from dataclasses import dataclass, field
-from typing import Callable, Final, cast
-
+from collections.abc import Callable
 from ctypes import wintypes
+from dataclasses import dataclass, field
+from typing import Final, cast
 
 from sf6viewer.domain.value_objects import UserCode
 from sf6viewer.infrastructure.storage.app_paths import AppPaths, atomic_write_bytes
