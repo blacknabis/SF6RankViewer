@@ -721,6 +721,34 @@ class NativeLoginBridge:
                 ),
             }
 
+    def _recover_interrupted_collections(self) -> None:
+        """Reconcile orphaned attempts after startup has acquired the loopback port."""
+        events: list[dict[str, object]] = []
+        recovered_at_ms = _now_ms()
+        with self._lock, self._session_factory() as session:
+            jobs = session.scalars(select(JobModel).where(
+                JobModel.type == "COLLECT",
+                JobModel.phase.in_({"PROFILE", "MATCHES"}),
+                JobModel.state.in_({JobState.QUEUED.value, JobState.RUNNING.value}),
+            ))
+            for job in jobs:
+                job.state = JobState.INTERRUPTED.value
+                job.error_code = job.error_code or "INTERNAL.UNEXPECTED"
+                job.diagnostic_id = job.diagnostic_id or _new_id()
+                if job.finished_at_ms is None:
+                    job.finished_at_ms = max(
+                        recovered_at_ms, job.requested_at_ms, job.started_at_ms or 0
+                    )
+                events.append({
+                    "event": "collection_interrupted", "job_id": job.id, "phase": job.phase,
+                    "finished_at_ms": job.finished_at_ms,
+                    "error_code": job.error_code, "diagnostic_id": job.diagnostic_id,
+                })
+            session.commit()
+        for event in events:
+            with suppress(Exception):
+                self._log_sink.write(event)
+
     def _admit_collection(
         self,
         key: str,
@@ -1181,6 +1209,9 @@ def run_desktop() -> int:
         server = LoopbackServer(application)
         server.start()
         bridge = NativeLoginBridge(paths, session_factory)
+        # Only the process owning the fixed loopback port may reconcile jobs.
+        # Keep this out of bridge construction and before starting new work.
+        bridge._recover_interrupted_collections()
         auto_collection_status = bridge.auto_collection_status()
         initial_auto_collection_enabled = auto_collection_status.get("enabled") is True
         initial_interval_seconds = auto_collection_status.get("interval_seconds")
@@ -1201,10 +1232,8 @@ def run_desktop() -> int:
         )
         return 0
     except Exception:
-        if server is not None:
-            server.stop()
-        if engine is not None:
-            engine.dispose()
+        # Retain port ownership until finally has stopped collection work.
+        # A second process must not recover jobs still owned by this scheduler.
         if _show_safe_startup_error():
             return 1
         raise
