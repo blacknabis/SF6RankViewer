@@ -10,16 +10,15 @@ import hashlib
 import re
 import zlib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import TypeAlias
 
 from sf6viewer.application.ports.repositories import (
     InsertOutcome,
     MatchRecord,
     ObservationRecord,
-    QuarantineRepository,
     QuarantineRecord,
+    QuarantineRepository,
     RawRecord,
     RawRecordRepository,
 )
@@ -28,10 +27,10 @@ from sf6viewer.domain.errors import DomainError, error_from_code
 from sf6viewer.domain.ingestion import ensure_completed_counts
 from sf6viewer.domain.match import MatchFacts, canonical_json, content_sha256, identity_key
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | Mapping[str, "JsonValue"]
-IdFactory: TypeAlias = Callable[[], str]
-Clock: TypeAlias = Callable[[], int]
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | tuple["JsonValue", ...] | Mapping[str, "JsonValue"]
+type IdFactory = Callable[[], str]
+type Clock = Callable[[], int]
 
 _FALLBACK_KEY = re.compile(r"fb:[0-9a-f]{64}:[1-9][0-9]*\Z")
 
@@ -84,9 +83,12 @@ class NormalizedMatch:
     source_id: str | None = None
     hydration_key: str | None = None
     fallback_identity_key: str | None = None
+    # Buckler's old parser hashed the current profile name instead of the
+    # replay player's name. Only that parser opts into evidence-backed repair.
+    allow_legacy_profile_name: bool = False
 
 
-Normalizer: TypeAlias = Callable[[Mapping[str, JsonValue]], NormalizedMatch]
+type Normalizer = Callable[[Mapping[str, JsonValue]], NormalizedMatch]
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +203,15 @@ class RawFirstCollectionService:
                 continue
 
             outcome = uow.matches.insert_or_compare(match)
+            if outcome is InsertOutcome.IDENTITY_COLLISION and normalized.allow_legacy_profile_name:
+                compatible = self._legacy_profile_name_match(
+                    uow, raw_records, raw_record, collected, normalized, match
+                )
+                if compatible is not None:
+                    # Keep the canonical legacy interpretation and its hash immutable.
+                    # The new raw observation retains the exact replay evidence.
+                    match = replace(match, content_sha256=compatible.content_sha256)
+                    outcome = InsertOutcome.SAME_CONTENT
             if outcome is InsertOutcome.IDENTITY_COLLISION:
                 self._quarantine(
                     quarantines,
@@ -261,6 +272,39 @@ class RawFirstCollectionService:
             finished_at_ms=self._clock(),
         )
         return result
+
+    @staticmethod
+    def _legacy_profile_name_match(
+        uow: UnitOfWork,
+        raw_records: RawRecordRepository,
+        raw_record: RawRecord,
+        collected: CollectedRawMatch,
+        normalized: NormalizedMatch,
+        match: MatchRecord,
+    ) -> MatchRecord | None:
+        """Prove an old hash differs only by a preserved profile display name.
+
+        A matching replay ID or matching projected fields alone is insufficient:
+        the original normalized raw evidence must be byte-for-byte identical,
+        and substituting only a known account name must reproduce the old hash.
+        No stored match, hash, or original observation is rewritten.
+        """
+        existing = uow.matches.get_by_identity(match.account_id, match.identity_key)
+        if existing is None:
+            return None
+        original = raw_records.get_original_for_match(existing.id)
+        if original is None or original.payload_sha256 != raw_record.payload_sha256:
+            return None
+        try:
+            if zlib.decompress(original.payload_json) != collected.canonical_payload:
+                return None
+        except zlib.error:
+            return None
+        for name in uow.profile_snapshots.list_display_names(match.account_id):
+            legacy_facts = replace(normalized.facts, my_name=name)
+            if content_sha256(legacy_facts) == existing.content_sha256:
+                return existing
+        return None
 
     def _raw_record(
         self, ingestion: CollectionIngestion, collected: CollectedRawMatch
@@ -329,9 +373,7 @@ class RawFirstCollectionService:
                 resolution_match_id=None,
             )
         )
-        raw_records.set_disposition(
-            raw_record.id, "QUARANTINED", disposed_at_ms=self._clock()
-        )
+        raw_records.set_disposition(raw_record.id, "QUARANTINED", disposed_at_ms=self._clock())
 
     def _new_id(self) -> str:
         value = self._id_factory()
@@ -377,9 +419,7 @@ def _resolve_identity(normalized: NormalizedMatch) -> tuple[str, str]:
 
 def _validate_source_key(source_key: object) -> None:
     """Reject malformed provenance only after its payload has been persisted."""
-    if source_key is not None and (
-        not isinstance(source_key, str) or not source_key.strip()
-    ):
+    if source_key is not None and (not isinstance(source_key, str) or not source_key.strip()):
         raise error_from_code("UPSTREAM.CONTRACT_CHANGED")
 
 

@@ -5,6 +5,7 @@ import pytest
 
 from sf6viewer.application.services.raw_collection import JsonValue
 from sf6viewer.domain.errors import DomainError
+from sf6viewer.domain.match import content_sha256
 from sf6viewer.infrastructure.buckler.battlelog_capture import normalize_battlelog_match
 from sf6viewer.infrastructure.buckler.profile_capture import normalize_profile
 
@@ -42,6 +43,20 @@ def test_battlelog_treats_unavailable_rating_sentinel_as_missing() -> None:
     assert normalized.facts.my_lp is None
     assert normalized.facts.opponent_lp == 19_001
     assert normalized.facts.result == "WIN"
+
+
+def test_battlelog_content_uses_replay_name_after_current_profile_is_renamed() -> None:
+    payload = cast(Mapping[str, JsonValue], _battle_payload(my_league_point=19_001))
+    original = normalize_battlelog_match(
+        payload, account_user_code="4285684297", own_display_name="BLACKNABIS"
+    )
+    renamed = normalize_battlelog_match(
+        payload, account_user_code="4285684297", own_display_name="NEW_PROFILE_NAME"
+    )
+
+    assert renamed.facts.my_name == "BLACKNABIS"
+    assert renamed.facts == original.facts
+    assert content_sha256(renamed.facts) == content_sha256(original.facts)
 
 
 @pytest.mark.parametrize("invalid_value", [-2, "-1", 1.5, True])

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from sf6viewer.application.ports.repositories import ProfileSnapshotRecord
@@ -16,6 +17,15 @@ class SqlAlchemyProfileSnapshotRepository:
     def __init__(self, session: Session, *, read_only: bool = False) -> None:
         self._session = session
         self._read_only = read_only
+
+    def list_display_names(self, account_id: int) -> list[str]:
+        """Return only distinct, nonempty names from this account's history."""
+        names = self._session.scalars(
+            select(ProfileSnapshotModel.display_name)
+            .where(ProfileSnapshotModel.account_id == account_id)
+            .distinct()
+        )
+        return [name for name in names if isinstance(name, str) and name.strip()]
 
     def add(self, snapshot: ProfileSnapshotRecord) -> None:
         """Add one profile observation linked to immutable raw evidence."""
