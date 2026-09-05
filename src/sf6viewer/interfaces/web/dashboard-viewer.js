@@ -271,9 +271,17 @@
       const result = Object.prototype.hasOwnProperty.call(RESULT_LABELS, match.result) ? match.result : "DRAW";
       card.item.dataset.result = result;
       card.result.textContent = RESULT_LABELS[result];
-      card.delta.className = deltaClass(match.mr_delta).replace("delta", "match-delta");
-      card.delta.textContent = metrics.deltaLabel(match.mr_delta);
-      card.delta.setAttribute("aria-label", `MR 변동 ${metrics.deltaLabel(match.mr_delta)}`);
+      const estimated = match.mr_delta_status === "estimated" && finite(match.mr_delta);
+      const pending = match.mr_delta_status === "pending";
+      const deltaLabel = estimated ? `추정 ${metrics.deltaLabel(match.mr_delta)}`
+        : pending ? "MR 확인 중" : "MR 확인 불가";
+      const deltaDetail = estimated ? "연속된 두 경기의 시작 MR 차이로 계산한 추정치입니다."
+        : pending ? "아직 다음 경기의 MR 기록이 없습니다."
+          : "연속된 경기의 MR 기록을 확인할 수 없어 변동을 표시하지 않습니다.";
+      card.delta.className = deltaClass(estimated ? match.mr_delta : null).replace("delta", "match-delta");
+      card.delta.textContent = deltaLabel;
+      card.delta.setAttribute("aria-label", `MR 변동 ${deltaLabel}. ${deltaDetail}`);
+      card.delta.setAttribute("title", deltaDetail);
       card.versus.textContent = `${display(match.my_character)} vs ${display(match.opponent_character)}`;
       card.opponent.textContent = `${display(match.opponent_name)} · ${matchRating(match)}`;
       card.relative.textContent = metrics.relativeTimeKo(match.occurred_at_ms, now);
