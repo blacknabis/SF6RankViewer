@@ -441,7 +441,9 @@ test("revision guard rejects an auto-status poll resolved after a toggle", async
 
   guard.advance();
   presentation = controller.liveRecordingPresentation({
-    ok: true, enabled: true, interval_seconds: 30
+    ok: true, enabled: true, interval_seconds: 30,
+    last_attempt_at_ms: Date.now() - 1_000,
+    last_success_at_ms: Date.now(), last_error_code: ""
   });
   resolvePoll({ ok: true, enabled: false, interval_seconds: 30 });
   await poll;
@@ -559,8 +561,71 @@ test("liveRecordingPresentation fails closed for absent or unsafe bridge status"
   });
   assert.deepEqual(controller.liveRecordingPresentation({
     ok: true, enabled: true, interval_seconds: 30
-  }), { live: true, text: "LIVE RECORDING" });
+  }), { live: false, text: "자동 수집 상태 확인 불가" });
   assert.deepEqual(controller.liveRecordingPresentation({
     ok: true, enabled: false, interval_seconds: 30
   }), { live: false, text: "RECORDING OFF" });
+});
+
+const COLLECTION_NOW = 1_777_632_030_000;
+const successfulCollection = (overrides = {}) => ({
+  ok: true, enabled: true, interval_seconds: 30,
+  last_attempt_at_ms: COLLECTION_NOW - 5_000,
+  last_success_at_ms: COLLECTION_NOW - 1_000,
+  last_error_code: "",
+  ...overrides
+});
+
+test("recording waits for the first successful match collection", () => {
+  const status = successfulCollection({ last_attempt_at_ms: 0, last_success_at_ms: 0 });
+  assert.deepEqual(controller.liveRecordingPresentation(status, COLLECTION_NOW), {
+    live: false, text: "첫 수집 대기 중"
+  });
+});
+
+test("recording reports the latest failure and recovers after a successful collection", () => {
+  const failed = successfulCollection({
+    last_attempt_at_ms: COLLECTION_NOW,
+    last_error_code: "UPSTREAM.UNAVAILABLE"
+  });
+  assert.deepEqual(controller.liveRecordingPresentation(failed, COLLECTION_NOW), {
+    live: false, text: "수집 오류"
+  });
+  assert.deepEqual(controller.liveRecordingPresentation(successfulCollection(), COLLECTION_NOW), {
+    live: true, text: "LIVE RECORDING"
+  });
+  assert.deepEqual(controller.liveRecordingPresentation({ ...failed, enabled: false }, COLLECTION_NOW), {
+    live: false, text: "RECORDING OFF"
+  });
+});
+
+test("recording stops claiming live when success is older than three polling intervals", () => {
+  const status = successfulCollection({
+    last_attempt_at_ms: COLLECTION_NOW - 91_000,
+    last_success_at_ms: COLLECTION_NOW - 90_000
+  });
+  assert.equal(controller.liveRecordingPresentation(status, COLLECTION_NOW).live, true);
+  assert.deepEqual(controller.liveRecordingPresentation(status, COLLECTION_NOW + 1), {
+    live: false, text: "수집 지연"
+  });
+  assert.equal(controller.liveRecordingPresentation({ ...status, interval_seconds: 60 }, COLLECTION_NOW + 1).live, true);
+  assert.equal(controller.liveRecordingPresentation(status, COLLECTION_NOW + 86_400_000).live, false);
+});
+
+test("recording fails closed for malformed activity and impossible future timestamps", () => {
+  for (const overrides of [
+    { last_success_at_ms: "1777632030000" },
+    { last_success_at_ms: -1 },
+    { last_success_at_ms: Number.NaN },
+    { last_success_at_ms: COLLECTION_NOW + 6_000 },
+    { last_attempt_at_ms: null },
+    { last_attempt_at_ms: COLLECTION_NOW + 6_000 },
+    { last_error_code: null },
+    { last_error_code: "UPSTREAM.TIMEOUT" },
+    { interval_seconds: Number.MAX_SAFE_INTEGER }
+  ]) {
+    assert.deepEqual(controller.liveRecordingPresentation(successfulCollection(overrides), COLLECTION_NOW), {
+      live: false, text: "자동 수집 상태 확인 불가"
+    });
+  }
 });

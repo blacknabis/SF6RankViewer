@@ -51,11 +51,17 @@ def test_auto_collection_setting_defaults_to_off_and_persists(tmp_path: Path) ->
             "ok": True,
             "enabled": False,
             "interval_seconds": 30,
+            "last_attempt_at_ms": 0,
+            "last_success_at_ms": 0,
+            "last_error_code": "",
         }
         assert bridge.set_auto_collection_enabled(True) == {
             "ok": True,
             "enabled": True,
             "interval_seconds": 30,
+            "last_attempt_at_ms": 0,
+            "last_success_at_ms": 0,
+            "last_error_code": "",
         }
     finally:
         bridge.close()

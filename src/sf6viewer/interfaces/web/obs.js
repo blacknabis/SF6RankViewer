@@ -3,6 +3,7 @@
 const metrics = window.SF6ViewerMetrics;
 const options = metrics.normalizeObsOptions(window.location.search);
 const POLL_INTERVAL_MS = 12_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 const CHART_LEFT = 4;
 const CHART_RIGHT = 382;
 const CHART_TOP = 12;
@@ -128,12 +129,15 @@ async function refresh() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    const response = await fetch("/api/v1/obs", {
-      credentials: "same-origin",
-      headers: { Accept: "application/json" }
-    });
-    if (!response.ok) throw new Error(String(response.status));
-    const payload = await response.json();
+    const payload = await window.SF6ViewerController.withTimeout(async ({ signal }) => {
+      const response = await fetch("/api/v1/obs", {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        signal
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      return response.json();
+    }, { timeoutMs: REQUEST_TIMEOUT_MS });
     if (payload.status !== "ok" || payload.schema_version !== "2" || !payload.statistics) {
       throw new Error("invalid payload");
     }

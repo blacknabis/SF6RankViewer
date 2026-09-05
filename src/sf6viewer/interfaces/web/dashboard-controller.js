@@ -84,15 +84,43 @@
     return result;
   }
 
-  function liveRecordingPresentation(autoStatus) {
+  function autoCollectionState(autoStatus, nowMs = Date.now()) {
     const safe = autoStatus && autoStatus.ok === true
       && typeof autoStatus.enabled === "boolean"
       && Number.isInteger(autoStatus.interval_seconds)
-      && autoStatus.interval_seconds >= 30;
-    if (!safe) return { live: false, text: "자동 수집 상태 확인 불가" };
-    return autoStatus.enabled
-      ? { live: true, text: "LIVE RECORDING" }
-      : { live: false, text: "RECORDING OFF" };
+      && autoStatus.interval_seconds >= 30
+      && Number.isSafeInteger(autoStatus.interval_seconds * 3_000);
+    if (!safe) return "unknown";
+    if (!autoStatus.enabled) return "off";
+    const validTime = (value) => Number.isSafeInteger(value)
+      && value >= 0 && value <= nowMs + 5_000;
+    if (!Number.isSafeInteger(nowMs) || nowMs <= 0
+        || !validTime(autoStatus.last_attempt_at_ms)
+        || !validTime(autoStatus.last_success_at_ms)
+        || typeof autoStatus.last_error_code !== "string") return "unknown";
+    if (autoStatus.last_error_code) {
+      if (autoStatus.last_attempt_at_ms === 0
+          || autoStatus.last_attempt_at_ms < autoStatus.last_success_at_ms) return "unknown";
+      return "error";
+    }
+    if (autoStatus.last_success_at_ms === 0) return "pending";
+    // Allow two missed checks before showing a delay; persisted success from
+    // an earlier session must not keep the recording indicator live forever.
+    return nowMs - autoStatus.last_success_at_ms > autoStatus.interval_seconds * 3_000
+      ? "stale" : "live";
+  }
+
+  function liveRecordingPresentation(autoStatus, nowMs = Date.now()) {
+    const state = autoCollectionState(autoStatus, nowMs);
+    const labels = {
+      unknown: "자동 수집 상태 확인 불가",
+      off: "RECORDING OFF",
+      pending: "첫 수집 대기 중",
+      error: "수집 오류",
+      stale: "수집 지연",
+      live: "LIVE RECORDING"
+    };
+    return { live: state === "live", text: labels[state] };
   }
 
   function cloneFeedState(state) {
@@ -391,6 +419,7 @@
     applyObsOptions,
     applyRestoredPreference,
     applyViewerPreference,
+    autoCollectionState,
     commitFeedState,
     commitRefreshedRegions,
     createPreferenceWriteQueue,
