@@ -14,9 +14,8 @@ from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Query
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, case, func, or_, select
-from sqlalchemy.orm import Session, aliased
-from sqlalchemy.sql import Select
+from sqlalchemy import case, func, select
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from sf6viewer import __version__
@@ -27,6 +26,11 @@ from sf6viewer.infrastructure.db.models import (
     ProfileSnapshotModel,
     QuarantineRecordModel,
     SettingsModel,
+)
+from sf6viewer.interfaces.api.match_delta import (
+    MrDeltaStatus,
+    estimate_match_delta,
+    matches_with_mr_evidence,
 )
 from sf6viewer.interfaces.api.viewer_projection import (
     ObsMatchupSummary,
@@ -97,6 +101,7 @@ class MatchResponse(ApiModel):
     opponent_lp: int | None
     result: MatchResult
     mr_delta: int | None = None
+    mr_delta_status: MrDeltaStatus = "unavailable"
 
 
 class ProfileSnapshotResponse(ApiModel):
@@ -260,12 +265,11 @@ def _page_metadata(total: int | None, page: int, page_size: int) -> PageMetadata
 
 
 def _match_response(
-    model: MatchModel, *, previous_mr: int | None = None
+    model: MatchModel, *, following: MatchModel | None = None,
+    witnessed: bool = False, ambiguous: bool = False,
 ) -> MatchResponse:
-    mr_delta = (
-        model.my_mr - previous_mr
-        if isinstance(model.my_mr, int) and isinstance(previous_mr, int)
-        else None
+    mr_delta, mr_delta_status = estimate_match_delta(
+        model, following, witnessed=witnessed, ambiguous=ambiguous,
     )
     return MatchResponse(
         id=model.id,
@@ -280,45 +284,7 @@ def _match_response(
         opponent_lp=model.opponent_lp,
         result=cast(MatchResult, model.result),
         mr_delta=mr_delta,
-    )
-
-
-def _matches_with_previous_mr(
-    reset_at_ms: int,
-) -> Select[tuple[MatchModel, int | None]]:
-    """Select visible matches with the prior known MR for the same character."""
-
-    current_match = aliased(MatchModel, name="current_match")
-    previous_match = aliased(MatchModel, name="previous_match")
-    previous_mr = (
-        select(previous_match.my_mr)
-        .where(
-            previous_match.account_id == current_match.account_id,
-            previous_match.my_character == current_match.my_character,
-            previous_match.my_mr.is_not(None),
-            previous_match.occurred_at_ms > reset_at_ms,
-            previous_match.occurred_at_ms <= current_match.occurred_at_ms,
-            or_(
-                previous_match.occurred_at_ms < current_match.occurred_at_ms,
-                and_(
-                    previous_match.occurred_at_ms == current_match.occurred_at_ms,
-                    previous_match.id < current_match.id,
-                ),
-            ),
-        )
-        .order_by(previous_match.occurred_at_ms.desc(), previous_match.id.desc())
-        .limit(1)
-        .correlate(current_match)
-        .scalar_subquery()
-        .label("previous_mr")
-    )
-    return (
-        select(current_match, previous_mr)
-        .where(
-            current_match.account_id == 1,
-            current_match.occurred_at_ms > reset_at_ms,
-        )
-        .order_by(current_match.occurred_at_ms.desc(), current_match.id.desc())
+        mr_delta_status=mr_delta_status,
     )
 
 
@@ -521,14 +487,16 @@ def create_read_api(
         """List canonical matches, newest first, with deterministic tie-breaking."""
 
         reset_at_ms = _match_reset_at_ms(session)
-        statement = _matches_with_previous_mr(reset_at_ms)
+        statement = matches_with_mr_evidence(reset_at_ms)
         records = session.execute(
             statement.limit(page_size).offset((page - 1) * page_size)
         ).all()
         return MatchPage(
             items=tuple(
-                _match_response(record, previous_mr=previous_mr)
-                for record, previous_mr in records
+                _match_response(
+                    record, following=following, witnessed=witnessed, ambiguous=ambiguous,
+                )
+                for record, following, witnessed, ambiguous in records
             ),
             page=_page_metadata(
                 session.scalar(
@@ -654,10 +622,10 @@ def create_read_api(
         recent_limit = 100
         reset_at_ms = _match_reset_at_ms(session)
         latest_match_row = session.execute(
-            _matches_with_previous_mr(reset_at_ms).limit(1)
+            matches_with_mr_evidence(reset_at_ms).limit(1)
         ).one_or_none()
-        latest_match, latest_match_previous_mr = (
-            latest_match_row if latest_match_row is not None else (None, None)
+        latest_match, following_match, witnessed, ambiguous = (
+            latest_match_row if latest_match_row is not None else (None, None, False, False)
         )
         active_character = _resolve_active_character(latest_match, latest_profile)
         char_filter = (
@@ -718,7 +686,10 @@ def create_read_api(
                 latest_character_match=recent_matches[0] if recent_matches else None,
             ),
             latest_match=(
-                _match_response(latest_match, previous_mr=latest_match_previous_mr)
+                _match_response(
+                    latest_match, following=following_match,
+                    witnessed=witnessed, ambiguous=ambiguous,
+                )
                 if latest_match is not None
                 else None
             ),

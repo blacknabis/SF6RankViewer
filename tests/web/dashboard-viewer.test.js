@@ -144,6 +144,48 @@ test("renderFeed reuses keyed cards, writes unsafe names as text, and removes re
   assert.equal(document.getElementById("match-feed-state").textContent.includes("updated"), false);
 });
 
+test("feed distinguishes pending, estimated, and unavailable MR without retaining old deltas", () => {
+  const document = new FakeDocument([
+    "match-feed-list", "match-feed-empty", "match-feed-load-more", "match-feed-state"
+  ]);
+  const viewer = viewerBoundary.create({ document, metrics });
+  const match = {
+    id: "reported-win", occurred_at_ms: Date.now(), result: "WIN", my_character: "Kimberly",
+    opponent_character: "Alex", opponent_name: "Rival", opponent_mr: 1630
+  };
+  const render = (mr_delta, mr_delta_status) => viewer.renderFeed({
+    items: [{ ...match, mr_delta, mr_delta_status }], exhausted: true, total: 1
+  });
+
+  render(null, "pending");
+  const card = document.getElementById("match-feed-list").children[0];
+  const delta = card.children[0].children[1];
+  assert.equal(delta.textContent, "MR 확인 중");
+  assert.equal(delta.className, "match-delta-neutral");
+  assert.match(delta.getAttribute("title"), /다음 경기/);
+
+  render(8, "estimated");
+  assert.equal(document.getElementById("match-feed-list").children[0], card);
+  assert.equal(delta.textContent, "추정 ▲ +8 MR");
+  assert.equal(delta.className, "match-delta-positive");
+  assert.match(delta.getAttribute("aria-label"), /추정/);
+  assert.match(delta.getAttribute("title"), /시작 MR/);
+
+  render(null, "unavailable");
+  assert.equal(delta.textContent, "MR 확인 불가");
+  assert.equal(delta.className, "match-delta-neutral");
+  assert.equal(delta.getAttribute("aria-label").includes("+8"), false);
+
+  // An older server or an inconsistent payload must not revive the previous-match delta.
+  for (const state of [undefined, "unknown", "pending", "unavailable"]) {
+    render(-8, state);
+    assert.equal(delta.textContent.includes("-8"), false);
+    assert.equal(delta.className, "match-delta-neutral");
+  }
+  render(null, "estimated");
+  assert.equal(delta.textContent, "MR 확인 불가");
+});
+
 test("chart points expose non-action focus tooltips and adjacent accessible data", () => {
   const document = aggregateDocument();
   const viewer = viewerBoundary.create({ document, metrics });

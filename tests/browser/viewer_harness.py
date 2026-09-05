@@ -55,7 +55,10 @@ def _match(index: int) -> dict[str, Any]:
         "opponent_mr": 1_500 + (index % 100),
         "opponent_lp": 20_000 + index * 10,
         "result": result,
-        "mr_delta": 12 if result == "WIN" else -9,
+        "mr_delta": None if index in {0, 2} else 12 if result == "WIN" else -9,
+        "mr_delta_status": (
+            "pending" if index == 0 else "unavailable" if index == 2 else "estimated"
+        ),
     }
 
 
